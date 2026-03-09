@@ -1,11 +1,8 @@
 streamlit
 pandas
-openpyxl
 numpy
-psycopg2-binary
-SQLAlchemy
 plotly
-matplotlib
 streamlit-option-menu
+openpyxl
 pyarrow==15.0.0
 supabase==2.3.4
