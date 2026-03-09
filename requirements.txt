@@ -4,5 +4,5 @@ numpy
 plotly
 streamlit-option-menu
 openpyxl
-pyarrow==15.0.0
-supabase==2.3.4
+pyarrow
+supabase
