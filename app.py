@@ -10,6 +10,7 @@ from database import save_to_db, load_from_db
 from modules.utils import t, fast_compute_moves, get_match_key_vectorized, get_match_key, parse_packing_time, BOX_UNITS, detect_vollpalettes, safe_hu, safe_del
 
 from modules.tab_dashboard import render_dashboard
+from modules.tab_daily_kpi import render_daily_kpi  # <-- PŘIDÁNO: Import nové záložky
 from modules.tab_pallets import render_pallets
 from modules.tab_fu import render_fu
 from modules.tab_fu_compare import render_fu_compare
@@ -277,6 +278,7 @@ def main():
             menu_title=None,
             options=[
                 _t("Přehled a Fronty", "Dashboard & Queue"), 
+                _t("Denní KPI (Ráno)", "Daily KPI"),   # <-- PŘIDÁNO: Menu item
                 _t("Paletové zakázky", "Pallet Orders"), 
                 _t("Celé palety (FU)", "Full Pallets (FU)"),
                 _t("Porovnání (FU vs SAP)", "Compare (FU vs SAP)"),
@@ -286,7 +288,7 @@ def main():
                 _t("Audit & Rentgen", "Audit & X-Ray"),
                 _t("Nástěnka (Tisk grafů)", "Notice Board (Print)")
             ],
-            icons=["bar-chart-line", "box-seam", "boxes", "arrow-left-right", "list-ol", "currency-dollar", "box", "clipboard2-check", "printer"],
+            icons=["bar-chart-line", "sun", "box-seam", "boxes", "arrow-left-right", "list-ol", "currency-dollar", "box", "clipboard2-check", "printer"], # <-- PŘIDÁNO: Ikonka "sun"
             menu_icon="cast", 
             default_index=0,
             styles={
@@ -454,6 +456,8 @@ def main():
     display_q = None
     if selected_page == _t("Přehled a Fronty", "Dashboard & Queue"): 
         display_q = render_dashboard(df_pick, data_dict['queue_count_col'])
+    elif selected_page == _t("Denní KPI (Ráno)", "Daily KPI"):            # <-- PŘIDÁNO: Zobrazení nové záložky
+        render_daily_kpi(df_pick, data_dict['df_vekp'])
     elif selected_page == _t("Paletové zakázky", "Pallet Orders"): 
         render_pallets(df_pick)
     elif selected_page == _t("Celé palety (FU)", "Full Pallets (FU)"): 
