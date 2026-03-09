@@ -47,10 +47,12 @@ def save_to_db(df, name):
         st.error(f"Chyba při ukládání {name} do Storage: {e}")
         return False
 
+# TENTO JEDEN ŘÁDEK VŠE ZRYCHLÍ NA MAXIMUM:
+@st.cache_data(show_spinner=False)
 def load_from_db(name):
     """
-    Extrémně rychlé čtení: Stáhne komprimovaný 2MB soubor a rozbalí ho 
-    přímo do Pandas DataFrame. Šetří gigabyty dat na síti.
+    Extrémně rychlé čtení: Stáhne komprimovaný soubor a rozbalí ho 
+    přímo do Pandas DataFrame. Pamatuje si ho v RAM!
     """
     if supabase is None:
         return None
@@ -67,5 +69,5 @@ def load_from_db(name):
         return df
         
     except Exception as e:
-        # Soubor na Supabase zatím neexistuje (uživatel ho ještě nenahrál v Admin zóně)
+        # Soubor na Supabase zatím neexistuje
         return None
