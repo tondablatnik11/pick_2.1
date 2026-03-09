@@ -32,19 +32,13 @@ def clean_pkg_name(name):
     name = re.sub(r'-?\s*KARTON\s*', '', name)
     return name.strip()
 
-def render_packing(billing_df, df_oe):
-    def _t(cs, en): 
-        return en if st.session_state.get('lang', 'cs') == 'en' else cs
-
-    st.markdown(f"<div class='section-header'><h3>📦 {_t('Analýza balícího procesu (OE-Times)', 'Packing Process Analysis (OE-Times)')}</h3><p>{_t('Komplexní propojení času u balícího stolu s konkrétními zákazníky, materiály a použitými obaly.', 'Comprehensive connection of packing station time with specific customers, materials, and used packaging.')}</p></div>", unsafe_allow_html=True)
-
-    if df_oe is None or df_oe.empty:
-        st.info(_t("Pro tuto záložku je nutné nahrát soubor OE-Times v Admin zóně.", "Upload the OE-Times file in Admin Zone to use this tab."))
-        return
-
-    if billing_df is None or billing_df.empty:
-        st.warning(_t("Pro propojení chybí data z Fakturace (VEKP). Aplikace nejprve potřebuje načíst data z předchozích záložek.", "Billing data (VEKP) missing for correlation. App needs data from previous tabs first."))
-        return
+# =====================================================================
+# 🚀 CACHEOVANÝ VÝPOČET - Provede se jen jednou a uloží se do RAM!
+# =====================================================================
+@st.cache_data(show_spinner=False)
+def prep_packing_data(billing_df, df_oe):
+    if df_oe is None or df_oe.empty or billing_df is None or billing_df.empty:
+        return pd.DataFrame(), pd.DataFrame(), None, None
 
     # Příprava dat pro čisté párování
     df_oe_clean = df_oe.copy()
@@ -56,18 +50,13 @@ def render_packing(billing_df, df_oe):
     # Spojení fakturačních dat a časů balení (Inner Join)
     pack_df = pd.merge(bill_clean, df_oe_clean, on='Clean_Del', how='inner')
 
-    if pack_df.empty:
-        st.error(_t("Nepodařilo se spárovat žádné zakázky z OE-Times s daty ze skladu/fakturace (Zkontrolujte formát čísel Delivery).", "Failed to match any orders from OE-Times with warehouse/billing data."))
-        return
-
     # Očištění dat od nesmyslných časů (např. 0 minut)
     valid_time_df = pack_df[pack_df['Process_Time_Min'] > 0].copy()
 
     if valid_time_df.empty:
-         st.warning(_t("Data se sice spojila, ale u žádné zakázky není zaznamenán platný procesní čas (> 0 min).", "Data matched, but no valid process time (> 0 min) found."))
-         return
+        return valid_time_df, pd.DataFrame(), None, None
 
-    # --- CHYTRÉ NAPOJENÍ NA PŘESNÁ SKLADOVÁ DATA (OPRAVA KUSŮ A MATERIÁLU) ---
+    # --- CHYTRÉ NAPOJENÍ NA PŘESNÁ SKLADOVÁ DATA ---
     df_pick = load_from_db('raw_pick')
     if df_pick is not None and not df_pick.empty:
         df_pick['Clean_Del'] = df_pick.get('Delivery', pd.Series()).astype(str).str.replace(r'\.0$', '', regex=True).str.strip().str.lstrip('0')
@@ -90,7 +79,60 @@ def render_packing(billing_df, df_oe):
 
     # Výpočet efektivity
     valid_time_df['Min_per_HU'] = np.where(valid_time_df['pocet_hu'] > 0, valid_time_df['Process_Time_Min'] / valid_time_df['pocet_hu'], valid_time_df['Process_Time_Min'])
-    
+
+    # --- PŘEDVÝPOČET KOMPLEXNÍCH VAZEB (Tohle extrémně zdržovalo) ---
+    mat_complex = pd.DataFrame()
+    if mat_col in valid_time_df.columns:
+        def get_top_pkg(series):
+            all_pkgs = []
+            for item in series.dropna():
+                for p in str(item).split(';'):
+                    cleaned = clean_pkg_name(p)
+                    if cleaned: all_pkgs.append(cleaned)
+            if not all_pkgs: return "-"
+            return pd.Series(all_pkgs).mode()[0]
+            
+        mat_complex = valid_time_df.groupby(mat_col).agg(
+            Orders=('Clean_Del', 'nunique'),
+            Total_Time=('Process_Time_Min', 'sum'),
+            Total_HU=('pocet_hu', 'sum'),
+            Total_Pcs=(pcs_col, lambda x: pd.to_numeric(x, errors='coerce').sum()),
+            Top_Carton=('Cartons', get_top_pkg) if 'Cartons' in valid_time_df.columns else ('Clean_Del', lambda x: "-"),
+            Top_KLT=('KLT', get_top_pkg) if 'KLT' in valid_time_df.columns else ('Clean_Del', lambda x: "-"),
+            Top_Pallet=('Palety', get_top_pkg) if 'Palety' in valid_time_df.columns else ('Clean_Del', lambda x: "-")
+        ).reset_index()
+        
+        mat_complex = mat_complex[mat_complex['Orders'] > 0]
+        mat_complex['Avg_Time_Order'] = np.where(mat_complex['Orders'] > 0, mat_complex['Total_Time'] / mat_complex['Orders'], 0)
+        mat_complex['Avg_Time_HU'] = np.where(mat_complex['Total_HU'] > 0, mat_complex['Total_Time'] / mat_complex['Total_HU'], 0)
+        mat_complex['Avg_Time_Pc'] = np.where(mat_complex['Total_Pcs'] > 0, mat_complex['Total_Time'] / mat_complex['Total_Pcs'], 0)
+        mat_complex['Avg_Pcs_Order'] = np.where(mat_complex['Orders'] > 0, mat_complex['Total_Pcs'] / mat_complex['Orders'], 0)
+        mat_complex = mat_complex.sort_values('Orders', ascending=False)
+
+    return valid_time_df, mat_complex, pcs_col, mat_col
+
+
+def render_packing(billing_df, df_oe):
+    def _t(cs, en): 
+        return en if st.session_state.get('lang', 'cs') == 'en' else cs
+
+    st.markdown(f"<div class='section-header'><h3>📦 {_t('Analýza balícího procesu (OE-Times)', 'Packing Process Analysis (OE-Times)')}</h3><p>{_t('Komplexní propojení času u balícího stolu s konkrétními zákazníky, materiály a použitými obaly.', 'Comprehensive connection of packing station time with specific customers, materials, and used packaging.')}</p></div>", unsafe_allow_html=True)
+
+    if df_oe is None or df_oe.empty:
+        st.info(_t("Pro tuto záložku je nutné nahrát soubor OE-Times v Admin zóně.", "Upload the OE-Times file in Admin Zone to use this tab."))
+        return
+
+    if billing_df is None or billing_df.empty:
+        st.warning(_t("Pro propojení chybí data z Fakturace (VEKP). Aplikace nejprve potřebuje načíst data z předchozích záložek.", "Billing data (VEKP) missing for correlation. App needs data from previous tabs first."))
+        return
+
+    with st.spinner(_t("🧠 Počítám efektivitu balení a analyzuji obaly...", "🧠 Calculating packing efficiency and packaging...")):
+        valid_time_df, mat_complex, pcs_col, mat_col = prep_packing_data(billing_df, df_oe)
+
+    if valid_time_df.empty:
+        st.warning(_t("Nepodařilo se spárovat platné zakázky (> 0 min) z OE-Times se skladem.", "No valid orders (> 0 min) matched with warehouse data."))
+        return
+
     # --- HLAVNÍ METRIKY ---
     c1, c2, c3, c4 = st.columns(4)
     with c1:
@@ -347,38 +389,7 @@ def render_packing(billing_df, df_oe):
         st.markdown(f"**🧠 {_t('Chování materiálů: Do čeho a v jakém množství se balí?', 'Material Behavior: What packaging and quantities are used?')}**")
         st.caption(_t("Algoritmus zkoumá každý materiál, detekuje průměrný počet odeslaných kusů a vyhledá z historie nejčastěji používanou krabici, KLT nebo paletu, do které pracovník tento materiál vložil.", "The algorithm examines each material, average pieces shipped, and finds the most frequently used packaging from history."))
         
-        if mat_col in valid_time_df.columns:
-            # Funkce pro zjištění "Módu" (nejčastějšího prvku) v sérii s oddělovači
-            def get_top_pkg(series):
-                all_pkgs = []
-                for item in series.dropna():
-                    for p in str(item).split(';'):
-                        cleaned = clean_pkg_name(p)
-                        if cleaned: all_pkgs.append(cleaned)
-                if not all_pkgs: return "-"
-                return pd.Series(all_pkgs).mode()[0]
-                
-            # Agregace za materiál
-            mat_complex = valid_time_df.groupby(mat_col).agg(
-                Orders=('Clean_Del', 'nunique'),
-                Total_Time=('Process_Time_Min', 'sum'),
-                Total_HU=('pocet_hu', 'sum'),
-                Total_Pcs=(pcs_col, lambda x: pd.to_numeric(x, errors='coerce').sum()),
-                Top_Carton=('Cartons', get_top_pkg) if 'Cartons' in valid_time_df.columns else ('Clean_Del', lambda x: "-"),
-                Top_KLT=('KLT', get_top_pkg) if 'KLT' in valid_time_df.columns else ('Clean_Del', lambda x: "-"),
-                Top_Pallet=('Palety', get_top_pkg) if 'Palety' in valid_time_df.columns else ('Clean_Del', lambda x: "-")
-            ).reset_index()
-            
-            # Filtrovat pouze materiály s nějakými daty
-            mat_complex = mat_complex[mat_complex['Orders'] > 0]
-            
-            mat_complex['Avg_Time_Order'] = np.where(mat_complex['Orders'] > 0, mat_complex['Total_Time'] / mat_complex['Orders'], 0)
-            mat_complex['Avg_Time_HU'] = np.where(mat_complex['Total_HU'] > 0, mat_complex['Total_Time'] / mat_complex['Total_HU'], 0)
-            mat_complex['Avg_Time_Pc'] = np.where(mat_complex['Total_Pcs'] > 0, mat_complex['Total_Time'] / mat_complex['Total_Pcs'], 0)
-            mat_complex['Avg_Pcs_Order'] = np.where(mat_complex['Orders'] > 0, mat_complex['Total_Pcs'] / mat_complex['Orders'], 0)
-            
-            mat_complex = mat_complex.sort_values('Orders', ascending=False)
-            
+        if not mat_complex.empty:
             # --- BUBBLE GRAF ---
             st.markdown(f"**📊 {_t('Rozložení náročnosti TOP 100 materiálů', 'Effort Distribution of TOP 100 Materials')}**")
             top100_mat = mat_complex.head(100).copy()
