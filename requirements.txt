@@ -1,0 +1,9 @@
+streamlit
+pandas
+openpyxl
+numpy
+psycopg2-binary
+SQLAlchemy
+plotly
+matplotlib
+streamlit-option-menu
