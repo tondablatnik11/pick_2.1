@@ -110,17 +110,17 @@ def render_daily_kpi(df_pick, raw_vekp):
                 pack_daily['Hour'] = pack_daily[time_col_v].apply(get_hour)
                 pack_daily['Category'] = pack_daily.get('Packaging Materials', 'Obal')
 
-    # --- 3. VÝSLEDKY A PRODUKTIVITA ---
+ # --- 3. VÝSLEDKY A PRODUKTIVITA ---
     st.markdown(f"### 📈 Výsledky za den: {selected_date.strftime('%d.%m.%Y')}")
     
     kpi_c1, kpi_c2, kpi_c3 = st.columns(3)
     
     with kpi_c1:
-        st.markdown("<div style='background-color:#f1f5f9; padding:15px; border-radius:8px; border-left:5px solid #94a3b8;'><h4>📥 Příjem (Zítra)</h4><p>Čekáme na napojení reportu...</p></div>", unsafe_allow_html=True)
+        st.markdown("<div style='background-color:var(--secondary-background-color); padding:15px; border-radius:8px; border-left:5px solid #94a3b8;'><h4>📥 Příjem (Zítra)</h4><p>Čekáme na napojení reportu...</p></div>", unsafe_allow_html=True)
     
     with kpi_c2:
         total_pick = pick_daily.shape[0] if not pick_daily.empty else 0
-        st.markdown(f"<div style='background-color:#eff6ff; padding:15px; border-radius:8px; border-left:5px solid #3b82f6;'><h4>🛒 Pick (Úkoly)</h4><h2>{total_pick:,} TO</h2></div>", unsafe_allow_html=True)
+        st.markdown(f"<div style='background-color:var(--secondary-background-color); padding:15px; border-radius:8px; border-left:5px solid #3b82f6;'><h4>🛒 Pick (Úkoly)</h4><h2>{total_pick:,} TO</h2></div>", unsafe_allow_html=True)
         if not pick_daily.empty:
             r_pick = pick_daily[pick_daily['Shift'].str.startswith('Ranní')].shape[0]
             o_pick = pick_daily[pick_daily['Shift'].str.startswith('Odpolední')].shape[0]
@@ -129,7 +129,7 @@ def render_daily_kpi(df_pick, raw_vekp):
 
     with kpi_c3:
         total_pack = pack_daily.shape[0] if not pack_daily.empty else 0
-        st.markdown(f"<div style='background-color:#f5f3ff; padding:15px; border-radius:8px; border-left:5px solid #8b5cf6;'><h4>📦 Balení (HU)</h4><h2>{total_pack:,} HU</h2></div>", unsafe_allow_html=True)
+        st.markdown(f"<div style='background-color:var(--secondary-background-color); padding:15px; border-radius:8px; border-left:5px solid #8b5cf6;'><h4>📦 Balení (HU)</h4><h2>{total_pack:,} HU</h2></div>", unsafe_allow_html=True)
         if not pack_daily.empty:
             r_pack = pack_daily[pack_daily['Shift'].str.startswith('Ranní')].shape[0]
             o_pack = pack_daily[pack_daily['Shift'].str.startswith('Odpolední')].shape[0]
