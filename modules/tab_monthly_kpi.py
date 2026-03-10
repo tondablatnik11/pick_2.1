@@ -165,7 +165,9 @@ def render_monthly_kpi(df_pick, raw_vekp, raw_vepo):
             st.markdown(f"#### 🔍 {_t('Detail konkrétního dne (Hodinový graf)', 'Specific Day Detail (Hourly Chart)')}")
             col_sel, _ = st.columns([1, 3])
             with col_sel:
-                drill_date = st.date_input(_t("Vyberte den pro detailní rozpad:", "Select day for detailed breakdown:"), value=datetime.date.today(), key="drill_pick")
+                # Inteligentní výchozí datum (poslední dostupný den ve vybraném měsíci místo fixního dneška)
+                max_date_pick = df_p_month['TempDate'].max().date() if not df_p_month.empty else datetime.date.today()
+                drill_date = st.date_input(_t("Vyberte den pro detailní rozpad:", "Select day for detailed breakdown:"), value=max_date_pick, key="drill_pick")
             
             drill_date_str = pd.to_datetime(drill_date).strftime('%Y-%m-%d')
             pick_day = df_p_month[df_p_month['TempDate'].dt.strftime('%Y-%m-%d') == drill_date_str].copy()
@@ -245,7 +247,9 @@ def render_monthly_kpi(df_pick, raw_vekp, raw_vepo):
             st.markdown(f"#### 🔍 {_t('Detail konkrétního dne', 'Specific Day Detail')}")
             col_sel_pack, _ = st.columns([1, 3])
             with col_sel_pack:
-                drill_date_pack = st.date_input(_t("Vyberte den pro detailní rozpad:", "Select day for detailed breakdown:"), value=datetime.date.today(), key="drill_pack")
+                # Inteligentní výchozí datum pro balení
+                max_date_pack = pack_month['TempDate'].max().date() if not pack_month.empty else datetime.date.today()
+                drill_date_pack = st.date_input(_t("Vyberte den pro detailní rozpad:", "Select day for detailed breakdown:"), value=max_date_pack, key="drill_pack")
             
             drill_date_pack_str = pd.to_datetime(drill_date_pack).strftime('%Y-%m-%d')
             pack_day = pack_month[pack_month['TempDate'].dt.strftime('%Y-%m-%d') == drill_date_pack_str].copy()
