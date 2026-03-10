@@ -10,7 +10,7 @@ try:
 except AttributeError:
     fast_render = lambda f: f
 
-# Verze v29 - NEPRŮSTŘELNÁ LOGIKA (Ochrana proti různým názvům sloupců při spojování dat)
+# Verze v30 - EXTRÉMNĚ ROBUSTNÍ DETEKCE SLOUPCŮ + DIAGNOSTIKA
 @st.cache_data(show_spinner=False)
 def cached_billing_logic_v28(df_pick, df_vekp, df_vepo, df_cats, queue_count_col, voll_set):
     billing_df = pd.DataFrame()
@@ -22,15 +22,19 @@ def cached_billing_logic_v28(df_pick, df_vekp, df_vepo, df_cats, queue_count_col
     # 1. PŘÍPRAVA A OČIŠTĚNÍ VEKP (S UNIFIKACÍ SLOUPCŮ)
     # ---------------------------------------------------------
     vekp_clean = df_vekp.copy()
+    cols_lower = [str(c).lower().strip() for c in vekp_clean.columns]
     
-    hu_int_cols = [c for c in vekp_clean.columns if "Internal HU" in str(c) or "HU-Nummer intern" in str(c) or "Handling Unit" == str(c).strip()]
-    hu_ext_cols = [c for c in vekp_clean.columns if "External HU" in str(c) or "HU-Nummer extern" in str(c) or "Handling Unit" in str(c)]
-    del_cols = [c for c in vekp_clean.columns if "Generated delivery" in str(c) or "generierte Lieferung" in str(c).lower() or "Delivery" in str(c)]
-    parent_cols = [c for c in vekp_clean.columns if "higher-level" in str(c).lower() or "übergeordn" in str(c).lower() or "superordinate" in str(c).lower()]
-    date_cols = [c for c in vekp_clean.columns if any(x in str(c).lower() for x in ['created on', 'erfasst am', 'datum', 'date'])]
+    hu_int_cols = [c for c, l in zip(vekp_clean.columns, cols_lower) if "internal" in l or "intern" in l or "handling unit" == l or "manipul" in l or "mj" in l]
+    hu_ext_cols = [c for c, l in zip(vekp_clean.columns, cols_lower) if "external" in l or "extern" in l]
+    del_cols = [c for c, l in zip(vekp_clean.columns, cols_lower) if "delivery" in l or "lieferung" in l or "dodávka" in l or "dodavka" in l or "zakázka" in l or "zakazka" in l]
+    parent_cols = [c for c, l in zip(vekp_clean.columns, cols_lower) if "higher-level" in l or "übergeordn" in l or "superordinate" in l or "nadřazen" in l]
+    date_cols = [c for c, l in zip(vekp_clean.columns, cols_lower) if "created on" in l or "erfasst am" in l or "datum" in l or "date" in l or "čas" in l or "time" in l]
 
-    vekp_clean['Uni_HU_Int'] = vekp_clean[hu_int_cols].bfill(axis=1).iloc[:, 0] if hu_int_cols else vekp_clean.iloc[:, 0]
-    vekp_clean['Uni_Del'] = vekp_clean[del_cols].bfill(axis=1).iloc[:, 0] if del_cols else np.nan
+    if hu_int_cols: vekp_clean['Uni_HU_Int'] = vekp_clean[hu_int_cols].bfill(axis=1).iloc[:, 0]
+    else: vekp_clean['Uni_HU_Int'] = vekp_clean.iloc[:, 0]
+    
+    if del_cols: vekp_clean['Uni_Del'] = vekp_clean[del_cols].bfill(axis=1).iloc[:, 0]
+    else: vekp_clean['Uni_Del'] = np.nan
     
     vekp_clean = vekp_clean.dropna(subset=["Uni_HU_Int", "Uni_Del"])
     vekp_clean['Clean_Del'] = vekp_clean['Uni_Del'].apply(safe_del)
@@ -79,7 +83,7 @@ def cached_billing_logic_v28(df_pick, df_vekp, df_vepo, df_cats, queue_count_col
     # ---------------------------------------------------------
     del_base_map = {}
     if df_cats is not None and not df_cats.empty:
-        c_del_cats = next((c for c in df_cats.columns if str(c).strip().lower() in ['lieferung', 'delivery', 'zakázka']), df_cats.columns[0])
+        c_del_cats = next((c for c in df_cats.columns if str(c).strip().lower() in ['lieferung', 'delivery', 'zakázka', 'dodávka', 'zakazka', 'dodavka']), df_cats.columns[0])
         c_kat = next((c for c in df_cats.columns if 'kategorie' in str(c).lower() or 'category' in str(c).lower()), None)
         if c_del_cats and c_kat:
             for _, r in df_cats.iterrows():
@@ -91,8 +95,8 @@ def cached_billing_logic_v28(df_pick, df_vekp, df_vepo, df_cats, queue_count_col
     del_vs_map = {}
     df_likp = load_from_db('raw_likp')
     if df_likp is not None and not df_likp.empty:
-        c_lief = next((c for c in df_likp.columns if "Delivery" in str(c) or "Lieferung" in str(c)), df_likp.columns[0])
-        c_vs = next((c for c in df_likp.columns if "Shipping Point" in str(c) or "Versandstelle" in str(c) or "Receiving Pt" in str(c)), None)
+        c_lief = next((c for c in df_likp.columns if "delivery" in str(c).lower() or "lieferung" in str(c).lower() or "dodávka" in str(c).lower() or "zakázka" in str(c).lower()), df_likp.columns[0])
+        c_vs = next((c for c in df_likp.columns if "shipping point" in str(c).lower() or "versandstelle" in str(c).lower() or "receiving pt" in str(c).lower() or "místo" in str(c).lower()), None)
         if c_vs:
             for _, r in df_likp.iterrows():
                 del_vs_map[safe_del(r[c_lief])] = str(r[c_vs]).strip().upper()
@@ -157,10 +161,13 @@ def cached_billing_logic_v28(df_pick, df_vekp, df_vepo, df_cats, queue_count_col
     vepo_mats = {}
     if df_vepo is not None and not df_vepo.empty:
         vepo_clean = df_vepo.copy()
-        v_hu_cols = [c for c in vepo_clean.columns if "Internal HU" in str(c) or "HU-Nummer intern" in str(c) or "Handling Unit" == str(c).strip()]
-        v_mat_cols = [c for c in vepo_clean.columns if "Material" in str(c) or "Materialnummer" in str(c)]
+        v_cols_lower = [str(c).lower().strip() for c in vepo_clean.columns]
         
-        vepo_clean['Uni_HU'] = vepo_clean[v_hu_cols].bfill(axis=1).iloc[:, 0] if v_hu_cols else vepo_clean.iloc[:, 0]
+        v_hu_cols = [c for c, l in zip(vepo_clean.columns, v_cols_lower) if "internal" in l or "intern" in l or "handling unit" == l or "manipul" in l or "mj" in l]
+        v_mat_cols = [c for c, l in zip(vepo_clean.columns, v_cols_lower) if "material" in l or "materiál" in l]
+        
+        if v_hu_cols: vepo_clean['Uni_HU'] = vepo_clean[v_hu_cols].bfill(axis=1).iloc[:, 0]
+        else: vepo_clean['Uni_HU'] = vepo_clean.iloc[:, 0]
         
         if v_mat_cols:
             vepo_clean['Uni_Mat'] = vepo_clean[v_mat_cols].bfill(axis=1).iloc[:, 0]
@@ -336,8 +343,10 @@ def render_reliability_report(df_pick, df_vekp, df_vepo):
     st.markdown("<div class='section-header'><h3>🛡️ Spolehlivost dat a chybějící záznamy</h3></div>", unsafe_allow_html=True)
     
     df_vekp_clean = df_vekp.copy()
-    c_del = [c for c in df_vekp_clean.columns if "Generated delivery" in str(c) or "generierte" in str(c).lower() or "Delivery" in str(c)]
-    c_hu = [c for c in df_vekp_clean.columns if "Internal HU" in str(c) or "HU-Nummer intern" in str(c) or "Handling Unit" == str(c).strip()]
+    cols_lower = [str(c).lower().strip() for c in df_vekp_clean.columns]
+    
+    c_del = [c for c, l in zip(df_vekp_clean.columns, cols_lower) if "delivery" in l or "lieferung" in l or "dodávka" in l or "dodavka" in l or "zakázka" in l or "zakazka" in l]
+    c_hu = [c for c, l in zip(df_vekp_clean.columns, cols_lower) if "internal" in l or "intern" in l or "handling unit" == l or "manipul" in l or "mj" in l]
     
     df_vekp_clean['Clean_Del'] = df_vekp_clean[c_del].bfill(axis=1).iloc[:, 0].apply(safe_del) if c_del else ""
     df_vekp_clean['Clean_HU'] = df_vekp_clean[c_hu].bfill(axis=1).iloc[:, 0].apply(safe_hu) if c_hu else ""
@@ -348,12 +357,14 @@ def render_reliability_report(df_pick, df_vekp, df_vepo):
     likp_dels = set()
     df_likp = load_from_db('raw_likp')
     if df_likp is not None and not df_likp.empty:
-        c_likp_del = next((c for c in df_likp.columns if "Delivery" in str(c) or "Lieferung" in str(c)), df_likp.columns[0])
+        l_cols_lower = [str(c).lower().strip() for c in df_likp.columns]
+        c_likp_del = next((c for c, l in zip(df_likp.columns, l_cols_lower) if "delivery" in l or "lieferung" in l or "dodávka" in l or "zakázka" in l), df_likp.columns[0])
         likp_dels = set(df_likp[c_likp_del].apply(safe_del))
         
     vepo_hus = set()
     if df_vepo is not None and not df_vepo.empty:
-        c_vepo_hu = [c for c in df_vepo.columns if "Internal HU" in str(c) or "HU-Nummer intern" in str(c) or "Handling Unit" == str(c).strip()]
+        v_cols_lower = [str(c).lower().strip() for c in df_vepo.columns]
+        c_vepo_hu = [c for c, l in zip(df_vepo.columns, v_cols_lower) if "internal" in l or "intern" in l or "handling unit" == l or "manipul" in l or "mj" in l]
         if c_vepo_hu:
             vepo_hus = set(df_vepo[c_vepo_hu].bfill(axis=1).iloc[:, 0].apply(safe_hu))
         
@@ -394,6 +405,22 @@ def render_billing(df_pick, df_vekp, df_vepo, df_cats, queue_count_col, aus_data
     def _t(cs, en): return en if st.session_state.get('lang', 'cs') == 'en' else cs
 
     st.markdown(f"<div class='section-header'><h3>💰 {_t('Korelace mezi Pickováním a Účtováním', 'Correlation Between Picking and Billing')}</h3><p>{_t('Zákazník platí podle počtu výsledných balících jednotek (HU). Zde vidíte náročnost vytvoření těchto zpoplatněných jednotek napříč fakturačními kategoriemi.', 'The customer pays based on the number of billed HUs. Here you can see the effort required to create these billed units across categories.')}</p></div>", unsafe_allow_html=True)
+
+    # 🚨 BEZPEČNOSTNÍ DIAGNOSTIKA VEKP
+    if df_vekp is not None and not df_vekp.empty:
+        cols_lower = [str(c).lower().strip() for c in df_vekp.columns]
+        del_cols = [c for c, l in zip(df_vekp.columns, cols_lower) if "delivery" in l or "lieferung" in l or "dodávka" in l or "dodavka" in l or "zakázka" in l or "zakazka" in l]
+        if not del_cols:
+            st.error(f"🚨 **Kritická chyba: Aplikace nedokáže ve vašem VEKP souboru najít sloupec se zakázkou.** \n\nZkuste upravit export ze SAPu, nebo se mi ozvěte. \n\n**Názvy sloupců, které máte ve VEKP teď:** `{list(df_vekp.columns)}`")
+            return
+            
+    # 🚨 BEZPEČNOSTNÍ DIAGNOSTIKA VEPO
+    if df_vepo is not None and not df_vepo.empty:
+        cols_lower_v = [str(c).lower().strip() for c in df_vepo.columns]
+        mat_cols = [c for c, l in zip(df_vepo.columns, cols_lower_v) if "material" in l or "materiál" in l]
+        if not mat_cols:
+            st.error(f"🚨 **Kritická chyba: Aplikace nedokáže ve vašem VEPO souboru najít sloupec pro Materiál.** \n\n**Názvy sloupců, které máte ve VEPO teď:** `{list(df_vepo.columns)}`")
+            return
 
     with st.spinner("🧠 Analyzuji SAP data (VEKP, VEPO)..."):
         render_reliability_report(df_pick, df_vekp, df_vepo)
