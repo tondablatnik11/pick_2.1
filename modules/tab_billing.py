@@ -10,7 +10,7 @@ try:
 except AttributeError:
     fast_render = lambda f: f
 
-# Verze v28 - ZLATÁ LOGIKA + Podpora filtrování dle měsíců
+# Verze v29 - NEPRŮSTŘELNÁ LOGIKA (Ochrana proti různým názvům sloupců při spojování dat)
 @st.cache_data(show_spinner=False)
 def cached_billing_logic_v28(df_pick, df_vekp, df_vepo, df_cats, queue_count_col, voll_set):
     billing_df = pd.DataFrame()
@@ -19,32 +19,39 @@ def cached_billing_logic_v28(df_pick, df_vekp, df_vepo, df_cats, queue_count_col
         return billing_df, df_hu_details
 
     # ---------------------------------------------------------
-    # 1. PŘÍPRAVA A OČIŠTĚNÍ VEKP (VŠECHNY ZAKÁZKY BEZ FILTRU)
+    # 1. PŘÍPRAVA A OČIŠTĚNÍ VEKP (S UNIFIKACÍ SLOUPCŮ)
     # ---------------------------------------------------------
-    vekp_clean = df_vekp.dropna(subset=["Handling Unit", "Generated delivery"]).copy()
-    vekp_clean['Clean_Del'] = vekp_clean['Generated delivery'].apply(safe_del)
-    vekp_filtered = vekp_clean[vekp_clean['Clean_Del'] != ''].copy() 
+    vekp_clean = df_vekp.copy()
     
+    hu_int_cols = [c for c in vekp_clean.columns if "Internal HU" in str(c) or "HU-Nummer intern" in str(c) or "Handling Unit" == str(c).strip()]
+    hu_ext_cols = [c for c in vekp_clean.columns if "External HU" in str(c) or "HU-Nummer extern" in str(c) or "Handling Unit" in str(c)]
+    del_cols = [c for c in vekp_clean.columns if "Generated delivery" in str(c) or "generierte Lieferung" in str(c).lower() or "Delivery" in str(c)]
+    parent_cols = [c for c in vekp_clean.columns if "higher-level" in str(c).lower() or "übergeordn" in str(c).lower() or "superordinate" in str(c).lower()]
+    date_cols = [c for c in vekp_clean.columns if any(x in str(c).lower() for x in ['created on', 'erfasst am', 'datum', 'date'])]
+
+    vekp_clean['Uni_HU_Int'] = vekp_clean[hu_int_cols].bfill(axis=1).iloc[:, 0] if hu_int_cols else vekp_clean.iloc[:, 0]
+    vekp_clean['Uni_Del'] = vekp_clean[del_cols].bfill(axis=1).iloc[:, 0] if del_cols else np.nan
+    
+    vekp_clean = vekp_clean.dropna(subset=["Uni_HU_Int", "Uni_Del"])
+    vekp_clean['Clean_Del'] = vekp_clean['Uni_Del'].apply(safe_del)
+    vekp_filtered = vekp_clean[vekp_clean['Clean_Del'] != ''].copy() 
+
     if vekp_filtered.empty: return billing_df, df_hu_details
 
-    vekp_hu_col = next((c for c in vekp_filtered.columns if "Internal HU" in str(c) or "HU-Nummer intern" in str(c)), vekp_filtered.columns[0])
-    vekp_ext_col = vekp_filtered.columns[1]
-    parent_col_vepo = next((c for c in vekp_filtered.columns if "higher-level" in str(c).lower() or "übergeordn" in str(c).lower() or "superordinate" in str(c).lower()), None)
-    
-    vekp_filtered['Clean_HU_Int'] = vekp_filtered[vekp_hu_col].apply(safe_hu)
-    vekp_filtered['Clean_HU_Ext'] = vekp_filtered[vekp_ext_col].apply(safe_hu)
-    vekp_filtered['Clean_Parent'] = vekp_filtered[parent_col_vepo].apply(safe_hu) if parent_col_vepo else ""
+    vekp_filtered['Uni_HU_Ext'] = vekp_filtered[hu_ext_cols].bfill(axis=1).iloc[:, 0] if hu_ext_cols else vekp_filtered.iloc[:, 1]
+    vekp_filtered['Uni_Parent'] = vekp_filtered[parent_cols].bfill(axis=1).iloc[:, 0] if parent_cols else ""
 
-    # Extrakce měsíce z VEKP (pro spolehlivé filtrování)
-    c_created = next((c for c in vekp_filtered.columns if any(x in str(c).lower() for x in ['created on', 'erfasst am', 'datum', 'date'])), None)
-    if c_created:
-        vekp_filtered['VEKP_Date'] = pd.to_datetime(vekp_filtered[c_created], errors='coerce')
+    vekp_filtered['Clean_HU_Int'] = vekp_filtered['Uni_HU_Int'].apply(safe_hu)
+    vekp_filtered['Clean_HU_Ext'] = vekp_filtered['Uni_HU_Ext'].apply(safe_hu)
+    vekp_filtered['Clean_Parent'] = vekp_filtered['Uni_Parent'].apply(safe_hu)
+    
+    if date_cols:
+        vekp_filtered['VEKP_Date'] = pd.to_datetime(vekp_filtered[date_cols].bfill(axis=1).iloc[:, 0], errors='coerce')
         vekp_filtered['VEKP_Month'] = vekp_filtered['VEKP_Date'].dt.to_period('M').astype(str).replace('NaT', 'Neznámé')
     else:
         vekp_filtered['VEKP_Month'] = 'Neznámé'
         
     del_vekp_month = vekp_filtered.groupby('Clean_Del')['VEKP_Month'].first().to_dict()
-
     int_to_ext = dict(zip(vekp_filtered['Clean_HU_Int'], vekp_filtered['Clean_HU_Ext']))
 
     # ---------------------------------------------------------
@@ -145,16 +152,21 @@ def cached_billing_logic_v28(df_pick, df_vekp, df_vepo, df_cats, queue_count_col
             del_base_map[d] = base
 
     # ---------------------------------------------------------
-    # 4. VEPO STROM A MAPOVÁNÍ MATERIÁLŮ
+    # 4. VEPO STROM A MAPOVÁNÍ MATERIÁLŮ (S UNIFIKACÍ)
     # ---------------------------------------------------------
     vepo_mats = {}
     if df_vepo is not None and not df_vepo.empty:
-        vepo_hu_col = next((c for c in df_vepo.columns if "Internal HU" in str(c) or "HU-Nummer intern" in str(c)), df_vepo.columns[0])
-        vepo_mat_col = next((c for c in df_vepo.columns if "Material" in str(c)), None)
-        if vepo_mat_col:
-            for _, r in df_vepo.dropna(subset=[vepo_hu_col, vepo_mat_col]).iterrows():
-                h = safe_hu(r[vepo_hu_col])
-                m = str(r[vepo_mat_col]).strip()
+        vepo_clean = df_vepo.copy()
+        v_hu_cols = [c for c in vepo_clean.columns if "Internal HU" in str(c) or "HU-Nummer intern" in str(c) or "Handling Unit" == str(c).strip()]
+        v_mat_cols = [c for c in vepo_clean.columns if "Material" in str(c) or "Materialnummer" in str(c)]
+        
+        vepo_clean['Uni_HU'] = vepo_clean[v_hu_cols].bfill(axis=1).iloc[:, 0] if v_hu_cols else vepo_clean.iloc[:, 0]
+        
+        if v_mat_cols:
+            vepo_clean['Uni_Mat'] = vepo_clean[v_mat_cols].bfill(axis=1).iloc[:, 0]
+            for _, r in vepo_clean.dropna(subset=['Uni_HU', 'Uni_Mat']).iterrows():
+                h = safe_hu(r['Uni_HU'])
+                m = str(r['Uni_Mat']).strip()
                 if h not in vepo_mats: vepo_mats[h] = set()
                 vepo_mats[h].add(m)
 
@@ -295,7 +307,6 @@ def cached_billing_logic_v28(df_pick, df_vekp, df_vepo, df_cats, queue_count_col
     billing_df['Delivery'] = billing_df['Clean_Del']
     billing_df['Clean_Del_Merge'] = billing_df['Clean_Del']
     
-    # Přiřazení měsíce (Přednostně z VEKP data)
     if not df_pick_billing.empty:
         del_metadata = df_pick_billing.groupby('Clean_Del').agg(
             Month=('Month', 'first'),
@@ -325,11 +336,11 @@ def render_reliability_report(df_pick, df_vekp, df_vepo):
     st.markdown("<div class='section-header'><h3>🛡️ Spolehlivost dat a chybějící záznamy</h3></div>", unsafe_allow_html=True)
     
     df_vekp_clean = df_vekp.copy()
-    c_del = next((c for c in df_vekp_clean.columns if "Generated delivery" in str(c) or "generierte" in str(c).lower()), None)
-    c_hu = next((c for c in df_vekp_clean.columns if "Internal HU" in str(c) or "HU-Nummer intern" in str(c)), df_vekp_clean.columns[0])
+    c_del = [c for c in df_vekp_clean.columns if "Generated delivery" in str(c) or "generierte" in str(c).lower() or "Delivery" in str(c)]
+    c_hu = [c for c in df_vekp_clean.columns if "Internal HU" in str(c) or "HU-Nummer intern" in str(c) or "Handling Unit" == str(c).strip()]
     
-    df_vekp_clean['Clean_Del'] = df_vekp_clean[c_del].apply(safe_del)
-    df_vekp_clean['Clean_HU'] = df_vekp_clean[c_hu].apply(safe_hu)
+    df_vekp_clean['Clean_Del'] = df_vekp_clean[c_del].bfill(axis=1).iloc[:, 0].apply(safe_del) if c_del else ""
+    df_vekp_clean['Clean_HU'] = df_vekp_clean[c_hu].bfill(axis=1).iloc[:, 0].apply(safe_hu) if c_hu else ""
     
     all_dels = df_vekp_clean[df_vekp_clean['Clean_Del'] != '']['Clean_Del'].unique()
     pick_dels = set(df_pick['Delivery'].apply(safe_del)) if df_pick is not None else set()
@@ -342,8 +353,9 @@ def render_reliability_report(df_pick, df_vekp, df_vepo):
         
     vepo_hus = set()
     if df_vepo is not None and not df_vepo.empty:
-        c_vepo_hu = next((c for c in df_vepo.columns if "Internal HU" in str(c) or "HU-Nummer intern" in str(c)), df_vepo.columns[0])
-        vepo_hus = set(df_vepo[c_vepo_hu].apply(safe_hu))
+        c_vepo_hu = [c for c in df_vepo.columns if "Internal HU" in str(c) or "HU-Nummer intern" in str(c) or "Handling Unit" == str(c).strip()]
+        if c_vepo_hu:
+            vepo_hus = set(df_vepo[c_vepo_hu].bfill(axis=1).iloc[:, 0].apply(safe_hu))
         
     del_hu_map = df_vekp_clean.groupby('Clean_Del')['Clean_HU'].apply(set).to_dict()
     
@@ -397,10 +409,7 @@ def render_billing(df_pick, df_vekp, df_vepo, df_cats, queue_count_col, aus_data
         if 'Month' in df_pick.columns:
             pick_months = [m for m in df_pick['Month'].unique() if m != 'Neznámé']
             if len(pick_months) >= 1:
-                # OPRAVA: Očištění 'Delivery' na 'Clean_Del' přímo zde, aby nedošlo ke KeyError
                 valid_dels = set(df_pick['Delivery'].apply(safe_del).dropna().unique())
-                
-                # Zobrazíme zakázky z vybraných měsíců + zakázky spárované s Pick reportem
                 billing_df = billing_df[(billing_df['Month'].isin(pick_months)) | (billing_df['Clean_Del'].isin(valid_dels))].copy()
                 df_hu_details = df_hu_details[df_hu_details['Clean_Del'].isin(billing_df['Clean_Del'])].copy()
 
