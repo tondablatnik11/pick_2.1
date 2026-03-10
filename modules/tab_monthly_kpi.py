@@ -46,8 +46,8 @@ def render_monthly_kpi(df_pick, raw_vekp, raw_vepo):
             
             # Seskupení po dnech
             pick_daily = df_p.groupby(df_p['TempDate'].dt.date).agg(
-                Total_TO=('Delivery', 'count'),      # Každý řádek je 1 TO
-                Total_Pieces=('Qty', 'sum')          # Součet kusů
+                Total_TO=('Delivery', 'count'),      
+                Total_Pieces=('Qty', 'sum')          
             ).reset_index()
             pick_daily.rename(columns={'TempDate': 'Date'}, inplace=True)
             
@@ -147,7 +147,8 @@ def render_monthly_kpi(df_pick, raw_vekp, raw_vepo):
             voll_set = st.session_state.get('voll_set', set())
             qc_col = 'Delivery' if (df_pick is None or 'Transfer Order Number' not in df_pick.columns) else 'Transfer Order Number'
             
-            _, df_hu_details = cached_billing_logic_v28(df_pick, raw_vekp, raw_vepo, df_cats, qc_col, voll_set)
+            # Necháme aplikaci vygenerovat fakturační kategorie přesně jako na záložce Fakturace
+            billing_df, df_hu_details = cached_billing_logic_v28(df_pick, raw_vekp, raw_vepo, df_cats, qc_col, voll_set)
             
             # 2. Najdeme klíče
             vk_hu_col = next((c for c in df_vk.columns if "Internal HU" in str(c) or "HU-Nummer intern" in str(c)), None)
@@ -163,19 +164,40 @@ def render_monthly_kpi(df_pick, raw_vekp, raw_vepo):
                 df_vp['Clean_HU'] = df_vp[vp_hu_col].apply(safe_hu)
                 df_vp['VP_Qty'] = pd.to_numeric(df_vp[vp_qty_col], errors='coerce').fillna(0)
                 
-                if not df_hu_details.empty:
-                    df_hu_details['Clean_HU'] = df_hu_details['HU_Int'].apply(safe_hu)
-                
                 # Agregace kusů z VEPO podle HU
                 hu_pieces = df_vp.groupby('Clean_HU')['VP_Qty'].sum().reset_index()
                 
-                # Propojení tabulek: VEKP + Kusy + Kategorie
+                # Propojení tabulek: VEKP + Kusy
                 pack_data = pd.merge(df_vk, hu_pieces, on='Clean_HU', how='left')
-                if not df_hu_details.empty:
-                    pack_data = pd.merge(pack_data, df_hu_details[['Clean_HU', 'Category_Full']], on='Clean_HU', how='left')
-                    pack_data['Category'] = pack_data['Category_Full'].fillna(_t('Neznámá / Čeká na výpočet', 'Unknown / Awaiting Calc'))
-                else:
-                    pack_data['Category'] = _t('Bez kategorie', 'No category')
+                
+                # ------ NEPRŮSTŘELNÉ NAPOJENÍ KATEGORIÍ (KASKÁDA) ------
+                pack_data['Category'] = np.nan
+                
+                # Metoda A: Mapování napřímo přes HU_Int
+                if df_hu_details is not None and not df_hu_details.empty and 'HU_Int' in df_hu_details.columns:
+                    df_hu_details['Clean_HU'] = df_hu_details['HU_Int'].apply(safe_hu)
+                    hu_map = df_hu_details.drop_duplicates('Clean_HU').set_index('Clean_HU')['Category_Full'].to_dict()
+                    pack_data['Category'] = pack_data['Clean_HU'].map(hu_map)
+                
+                # Metoda B: Mapování přes číslo zakázky (Delivery)
+                # Pokud některé HU nemají kategorii, podíváme se do billing_df, pod jakou zakázku spadají
+                if pack_data['Category'].isna().any() and billing_df is not None and not billing_df.empty:
+                    del_vekp = next((c for c in pack_data.columns if 'GENERATED DELIVERY' in str(c).upper() or 'DELIVERY' in str(c).upper()), None)
+                    del_bill = next((c for c in billing_df.columns if 'CLEAN_DEL' in str(c).upper() or 'DELIVERY' in str(c).upper()), None)
+                    
+                    if del_vekp and del_bill and 'Category_Full' in billing_df.columns:
+                        pack_data['Clean_Del'] = pack_data[del_vekp].astype(str).str.strip().str.replace(r'\.0$', '', regex=True).str.lstrip('0')
+                        
+                        b_df = billing_df.copy()
+                        b_df['Clean_Del'] = b_df[del_bill].astype(str).str.strip().str.replace(r'\.0$', '', regex=True).str.lstrip('0')
+                        cat_map = b_df.drop_duplicates('Clean_Del').set_index('Clean_Del')['Category_Full'].to_dict()
+                        
+                        # Doplnění těch, kterým se nenašlo HU (fillna)
+                        pack_data['Category'] = pack_data['Category'].fillna(pack_data['Clean_Del'].map(cat_map))
+
+                # Metoda C: Ostatní (co nebylo nalezeno ani přes HU, ani přes Delivery)
+                pack_data['Category'] = pack_data['Category'].fillna(_t('Ostatní / Nepřiřazeno', 'Other / Unassigned'))
+                # -------------------------------------------------------
                 
                 # Filtrace podle data
                 pack_data['TempDate'] = pd.to_datetime(pack_data[date_col_v], errors='coerce')
@@ -258,7 +280,7 @@ def render_monthly_kpi(df_pick, raw_vekp, raw_vepo):
                     with c2:
                         st.markdown(f"**{_t('Zabalené HU podle Kategorií', 'Packed HUs by Category')}**")
                         cat_counts = pack_day.groupby('Category').size().reset_index(name='HU_Count')
-                        cat_counts = cat_counts.sort_values('HU_Count', ascending=True) # Vzestupně, aby největší byl nahoře v horizontálním bar chartu
+                        cat_counts = cat_counts.sort_values('HU_Count', ascending=True) # Vzestupně pro horizontální chart
                         
                         fig_cat = px.bar(
                             cat_counts, 
