@@ -46,32 +46,60 @@ def render_monthly_kpi(df_pick, raw_vekp, raw_vepo):
         voll_set = st.session_state.get('voll_set', set())
         qc_col = 'Delivery' if (df_pick is None or 'Transfer Order Number' not in df_pick.columns) else 'Transfer Order Number'
         
-        _, df_hu_details = cached_billing_logic_v28(df_pick, raw_vekp, raw_vepo, df_cats, qc_col, voll_set)
+        billing_df, df_hu_details = cached_billing_logic_v28(df_pick, raw_vekp, raw_vepo, df_cats, qc_col, voll_set)
         
         vk_hu_col = next((c for c in df_vk.columns if "Internal HU" in str(c) or "HU-Nummer intern" in str(c)), None)
         vp_hu_col = next((c for c in df_vp.columns if "Internal HU" in str(c) or "HU-Nummer intern" in str(c)), None)
         vp_qty_col = next((c for c in df_vp.columns if "Packed quantity" in str(c) or "VEMNG" in str(c)), None)
         
         date_col_v = next((c for c in df_vk.columns if 'CREATED ON' in str(c).upper() or 'ERFASST AM' in str(c).upper()), None)
-        time_col_v = next((c for c in df_vk.columns if 'TIME' in str(c).upper() or 'UHRZEIT' in str(c).upper()), None)
         
         if vk_hu_col and vp_hu_col and date_col_v and vp_qty_col:
             df_vk['Clean_HU'] = df_vk[vk_hu_col].apply(safe_hu)
             df_vp['Clean_HU'] = df_vp[vp_hu_col].apply(safe_hu)
             df_vp['VP_Qty'] = pd.to_numeric(df_vp[vp_qty_col], errors='coerce').fillna(0)
             
-            if df_hu_details is not None and not df_hu_details.empty:
-                df_hu_details['Clean_HU'] = df_hu_details['HU_Int'].apply(safe_hu)
-            
+            # Agregace kusů z VEPO podle HU
             hu_pieces = df_vp.groupby('Clean_HU')['VP_Qty'].sum().reset_index()
             pack_data = pd.merge(df_vk, hu_pieces, on='Clean_HU', how='left')
             
-            if df_hu_details is not None and not df_hu_details.empty:
-                pack_data = pd.merge(pack_data, df_hu_details[['Clean_HU', 'Category_Full']], on='Clean_HU', how='left')
-                pack_data['Category'] = pack_data['Category_Full'].fillna(_t('Neznámá / Čeká na výpočet', 'Unknown / Awaiting Calc'))
-            else:
-                pack_data['Category'] = _t('Bez kategorie', 'No category')
+            # NEPRŮSTŘELNÁ LOGIKA MAPOVÁNÍ KATEGORIÍ Z DENNÍHO KPI
+            pack_data['Category'] = np.nan
             
+            # Krok 1: Pokus o spárování přes detailní rentgen HU
+            if df_hu_details is not None and not df_hu_details.empty and 'HU_Int' in df_hu_details.columns:
+                b_df = df_hu_details.copy()
+                b_df['Clean_HU'] = b_df['HU_Int'].apply(safe_hu)
+                cat_map_hu = b_df.drop_duplicates('Clean_HU').set_index('Clean_HU')['Category_Full'].to_dict()
+                pack_data['Category'] = pack_data['Clean_HU'].map(cat_map_hu)
+                
+            # Krok 2: Pokus o spárování přes zakázku (Delivery)
+            del_vekp = next((c for c in pack_data.columns if 'GENERATED DELIVERY' in str(c).upper() or 'DELIVERY' in str(c).upper()), None)
+            if del_vekp:
+                pack_data['Clean_Del'] = pack_data[del_vekp].astype(str).str.strip().str.replace(r'\.0$', '', regex=True).str.lstrip('0')
+                
+                # Zkusíme mapování z hotové Fakturace
+                if billing_df is not None and not billing_df.empty and 'Category_Full' in billing_df.columns:
+                    del_bill = next((c for c in billing_df.columns if 'CLEAN_DEL' in str(c).upper() or 'DELIVERY' in str(c).upper()), None)
+                    if del_bill:
+                        b_del_df = billing_df.copy()
+                        b_del_df['Clean_Del'] = b_del_df[del_bill].astype(str).str.strip().str.replace(r'\.0$', '', regex=True).str.lstrip('0')
+                        cat_map_del = b_del_df.drop_duplicates('Clean_Del').set_index('Clean_Del')['Category_Full'].to_dict()
+                        pack_data['Category'] = pack_data['Category'].fillna(pack_data['Clean_Del'].map(cat_map_del))
+                
+                # Krok 3: Pokus o spárování přímo ze surových dat reportu Kategorií
+                if df_cats is not None and not df_cats.empty:
+                    c_del_cats = next((c for c in df_cats.columns if str(c).strip().lower() in ['lieferung', 'delivery', 'zakázka']), df_cats.columns[0])
+                    df_cats['Clean_Del'] = df_cats[c_del_cats].astype(str).str.strip().str.replace(r'\.0$', '', regex=True).str.lstrip('0')
+                    if 'Kategorie' in df_cats.columns and 'Art' in df_cats.columns: 
+                        df_cats['Category_Full'] = df_cats['Kategorie'].astype(str).str.strip() + " " + df_cats['Art'].astype(str).str.strip()
+                        cat_map_raw = df_cats.drop_duplicates('Clean_Del').set_index('Clean_Del')['Category_Full'].to_dict()
+                        pack_data['Category'] = pack_data['Category'].fillna(pack_data['Clean_Del'].map(cat_map_raw))
+
+            # Finální záloha pro ty, co se nedaly spárovat (např. prázdné palety, interní pohyby)
+            pack_data['Category'] = pack_data['Category'].fillna(_t('Ostatní / Čeká na výpočet', 'Other / Awaiting Calc'))
+            
+            # Dokončení pro měsíční grafiku
             pack_data['TempDate'] = pd.to_datetime(pack_data[date_col_v], errors='coerce')
             pack_data = pack_data.dropna(subset=['TempDate'])
             pack_data = pack_data.drop_duplicates('Clean_HU')
@@ -165,7 +193,6 @@ def render_monthly_kpi(df_pick, raw_vekp, raw_vepo):
             st.markdown(f"#### 🔍 {_t('Detail konkrétního dne (Hodinový graf)', 'Specific Day Detail (Hourly Chart)')}")
             col_sel, _ = st.columns([1, 3])
             with col_sel:
-                # Inteligentní výchozí datum (poslední dostupný den ve vybraném měsíci místo fixního dneška)
                 max_date_pick = df_p_month['TempDate'].max().date() if not df_p_month.empty else datetime.date.today()
                 drill_date = st.date_input(_t("Vyberte den pro detailní rozpad:", "Select day for detailed breakdown:"), value=max_date_pick, key="drill_pick")
             
@@ -247,7 +274,6 @@ def render_monthly_kpi(df_pick, raw_vekp, raw_vepo):
             st.markdown(f"#### 🔍 {_t('Detail konkrétního dne', 'Specific Day Detail')}")
             col_sel_pack, _ = st.columns([1, 3])
             with col_sel_pack:
-                # Inteligentní výchozí datum pro balení
                 max_date_pack = pack_month['TempDate'].max().date() if not pack_month.empty else datetime.date.today()
                 drill_date_pack = st.date_input(_t("Vyberte den pro detailní rozpad:", "Select day for detailed breakdown:"), value=max_date_pack, key="drill_pack")
             
