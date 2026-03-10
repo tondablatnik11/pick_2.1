@@ -336,44 +336,46 @@ def main():
                                 cols = temp_df.columns.tolist()
                                 cols_up = [str(c).upper().strip() for c in cols]
                                 
-                                # 💡 UNIVERZÁLNÍ DETEKCE SLOUPCŮ (Odolná vůči EN/DE/CZ jazykům SAPu)
-                                has_del = any(x in c for c in cols_up for x in ['DELIVERY', 'LIEFERUNG', 'DODÁVKA', 'DODAVKA', 'ZAKÁZKA', 'ZAKAZKA', 'SD DOCUMENT'])
-                                has_hu = any(x in c for c in cols_up for x in ['HANDLING UNIT', 'HU-NUMMER', 'MANIPULAČ', 'MANIPULAC', 'INT. MJ', 'HU'])
-                                has_mat = any(x in c for c in cols_up for x in ['MATERIAL', 'MATERIÁL'])
-                                has_pick_qty = any(x in c for c in cols_up for x in ['ACT.QTY', 'ISTMENGE', 'MNOŽSTVÍ', 'MNOZSTVI', 'QTY'])
-                                has_queue = any('QUEUE' in c for c in cols_up)
-                                has_item = any(x in c for c in cols_up for x in ['ITEM', 'POSITION', 'POLOŽKA', 'POLOZKA', 'PACKED', 'BALEN'])
+                                # 💡 UNIVERZÁLNÍ A PŘESNÁ DETEKCE SLOUPCŮ (Otisk prstu každého reportu)
+                                is_pick = any('ACT.QTY' in c or 'ISTMENGE' in c or 'MNOŽSTVÍ (CÍL)' in c for c in cols_up) and any('TRANSFER ORDER' in c or 'TRANSPORTAUFTRAG' in c for c in cols_up)
+                                is_queue = any('QUEUE' in c for c in cols_up) and not is_pick
+                                is_vepo = any('PACKED QUANTITY' in c or 'VEMNG' in c or 'BALENÉ MNOŽSTVÍ' in c for c in cols_up)
+                                is_vekp = any('GENERATED DELIVERY' in c or 'GENERIERTE LIEFERUNG' in c or 'VYTVOŘENÁ DODÁVKA' in c for c in cols_up) or (any('TOTAL WEIGHT' in c or 'BRGEW' in c for c in cols_up) and any('HANDLING UNIT' in c or 'MANIPULAČNÍ' in c for c in cols_up) and not is_vepo)
+                                is_cats = any('KATEGORIE' in c or 'CATEGORY' in c for c in cols_up) and any('DELIVERY' in c or 'LIEFERUNG' in c or 'ZAKÁZKA' in c for c in cols_up)
+                                is_likp = any('SHIPPING POINT' in c or 'VERSANDSTELLE' in c or 'RECEIVING PT' in c or 'MÍSTO' in c for c in cols_up) and not is_vekp
+                                is_marm = any('NUMERATOR' in c or 'ČITATEL' in c for c in cols_up) and any('ALTERNATIVE UNIT' in c or 'ALTERNATIVNÍ' in c for c in cols_up)
+                                is_oe = 'oe-times' in fname or any('PROCESS' in c or 'PROCES' in c for c in cols_up) and any('TIME' in c or 'ČAS' in c or 'CAS' in c for c in cols_up)
                                 
                                 # ROZŘAZENÍ:
-                                if has_del and has_pick_qty:
+                                if is_pick:
                                     save_to_db(temp_df, 'raw_pick', append_data)
                                     st.success(f"✅ {_t('Uloženo jako Pick Report', 'Saved as Pick Report')}: {file.name}")
                                     
-                                elif has_queue and (any('TRANSFER ORDER' in c for c in cols_up) or has_del):
+                                elif is_queue:
                                     save_to_db(temp_df, 'raw_queue', append_data)
                                     st.success(f"✅ {_t('Uloženo jako Queue (LTAK)', 'Saved as Queue')}: {file.name}")
                                     
-                                elif has_hu and has_mat and has_item:
+                                elif is_vepo:
                                     save_to_db(temp_df, 'raw_vepo', append_data)
                                     st.success(f"✅ {_t('Uloženo jako VEPO', 'Saved as VEPO')}: {file.name}")
                                     
-                                elif has_hu and has_del and not has_mat:
+                                elif is_vekp:
                                     save_to_db(temp_df, 'raw_vekp', append_data)
                                     st.success(f"✅ {_t('Uloženo jako VEKP', 'Saved as VEKP')}: {file.name}")
                                     
-                                elif has_del and any(x in c for c in cols_up for x in ['KATEGORIE', 'CATEGORY']):
+                                elif is_cats:
                                     save_to_db(temp_df, 'raw_cats', append_data)
                                     st.success(f"✅ {_t('Uloženo jako Kategorie', 'Saved as Categories')}: {file.name}")
                                     
-                                elif any('NUMERATOR' in c for c in cols_up) and any('ALTERNATIVE UNIT' in c for c in cols_up): 
+                                elif is_marm: 
                                     save_to_db(temp_df, 'raw_marm', append_data)
                                     st.success(f"✅ {_t('Uloženo jako MARM', 'Saved as MARM')}: {file.name}")
                                     
-                                elif 'likp' in fname or any('SHIPPING POINT' in c for c in cols_up) or any('VERSANDSTELLE' in c for c in cols_up):
+                                elif is_likp:
                                     save_to_db(temp_df, 'raw_likp', append_data)
                                     st.success(f"✅ {_t('Uloženo jako LIKP', 'Saved as LIKP')}: {file.name}")
                                     
-                                elif 'oe-times' in fname or any('PROCESS' in c for c in cols_up) or any('TIME' in c for c in cols_up):
+                                elif is_oe:
                                     rename_map = {}
                                     has_dn = False
                                     has_time = False
@@ -389,12 +391,11 @@ def main():
                                     save_to_db(temp_df, 'raw_oe', append_data)
                                     st.success(f"✅ {_t('Uloženo jako OE-Times', 'Saved as OE-Times')}: {file.name}")
                                     
-                                elif len(cols) >= 2 and has_mat:
+                                elif len(cols) >= 2 and any('MATERIAL' in c or 'MATERIÁL' in c for c in cols_up):
                                     save_to_db(temp_df, 'raw_manual', append_data)
                                     st.success(f"✅ {_t('Uloženo jako Ruční Master Data', 'Saved as Manual Master Data')}: {file.name}")
                                     
                                 else:
-                                    # CHYBOVÁ HLÁŠKA S VÝPISEM SLOUPCŮ
                                     st.error(f"🚨 {_t('Soubor', 'File')} '{file.name}' {_t('nebyl rozpoznán a NEULOŽIL SE do databáze!', 'was not recognized and NOT SAVED!')}")
                                     st.info(f"🔍 Aplikace v souboru vidí tyto sloupce: {', '.join(cols)}")
                                     
