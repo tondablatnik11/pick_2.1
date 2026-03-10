@@ -96,7 +96,7 @@ def render_monthly_kpi(df_pick, raw_vekp, raw_vepo):
                         cat_map_raw = df_cats.drop_duplicates('Clean_Del').set_index('Clean_Del')['Category_Full'].to_dict()
                         pack_data['Category'] = pack_data['Category'].fillna(pack_data['Clean_Del'].map(cat_map_raw))
 
-            # Finální záloha pro ty, co se nedaly spárovat (např. prázdné palety, interní pohyby)
+            # Finální záloha pro ty, co se nedaly spárovat
             pack_data['Category'] = pack_data['Category'].fillna(_t('Ostatní / Čeká na výpočet', 'Other / Awaiting Calc'))
             
             # Dokončení pro měsíční grafiku
@@ -120,7 +120,7 @@ def render_monthly_kpi(df_pick, raw_vekp, raw_vepo):
     with col_m:
         selected_month = st.selectbox(_t("📅 Filtrovat měsíc:", "📅 Filter Month:"), all_months)
 
-    # Aplikace filtru
+    # Aplikace filtru PRO MĚSÍČNÍ GRAFY
     df_p_month = df_p[df_p['MonthStr'] == selected_month].copy() if not df_p.empty else pd.DataFrame()
     pack_month = pack_data[pack_data['MonthStr'] == selected_month].copy() if not pack_data.empty else pd.DataFrame()
 
@@ -189,7 +189,7 @@ def render_monthly_kpi(df_pick, raw_vekp, raw_vepo):
 
             st.divider()
             
-            # Drill-down: Detail dne
+            # Drill-down: Detail dne (POUŽÍVÁ CELÝ df_p)
             st.markdown(f"#### 🔍 {_t('Detail konkrétního dne (Hodinový graf)', 'Specific Day Detail (Hourly Chart)')}")
             col_sel, _ = st.columns([1, 3])
             with col_sel:
@@ -197,7 +197,8 @@ def render_monthly_kpi(df_pick, raw_vekp, raw_vepo):
                 drill_date = st.date_input(_t("Vyberte den pro detailní rozpad:", "Select day for detailed breakdown:"), value=max_date_pick, key="drill_pick")
             
             drill_date_str = pd.to_datetime(drill_date).strftime('%Y-%m-%d')
-            pick_day = df_p_month[df_p_month['TempDate'].dt.strftime('%Y-%m-%d') == drill_date_str].copy()
+            # OPRAVA ZDE: Filtrujeme přes df_p, nikoliv df_p_month
+            pick_day = df_p[df_p['TempDate'].dt.strftime('%Y-%m-%d') == drill_date_str].copy()
             
             if not pick_day.empty:
                 time_col = 'Confirmation time' if 'Confirmation time' in pick_day.columns else 'Time'
@@ -270,7 +271,7 @@ def render_monthly_kpi(df_pick, raw_vekp, raw_vepo):
 
             st.divider()
 
-            # Drill-down: Detail dne pro Balení
+            # Drill-down: Detail dne pro Balení (POUŽÍVÁ CELÝ pack_data)
             st.markdown(f"#### 🔍 {_t('Detail konkrétního dne', 'Specific Day Detail')}")
             col_sel_pack, _ = st.columns([1, 3])
             with col_sel_pack:
@@ -278,7 +279,8 @@ def render_monthly_kpi(df_pick, raw_vekp, raw_vepo):
                 drill_date_pack = st.date_input(_t("Vyberte den pro detailní rozpad:", "Select day for detailed breakdown:"), value=max_date_pack, key="drill_pack")
             
             drill_date_pack_str = pd.to_datetime(drill_date_pack).strftime('%Y-%m-%d')
-            pack_day = pack_month[pack_month['TempDate'].dt.strftime('%Y-%m-%d') == drill_date_pack_str].copy()
+            # OPRAVA ZDE: Filtrujeme přes pack_data, nikoliv pack_month
+            pack_day = pack_data[pack_data['TempDate'].dt.strftime('%Y-%m-%d') == drill_date_pack_str].copy()
             
             if not pack_day.empty:
                 c1, c2 = st.columns(2)
