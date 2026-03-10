@@ -16,15 +16,40 @@ except Exception as e:
 # Název bucketu, který jsi vytvořil v Supabase Storage
 BUCKET_NAME = "warehouse_data"
 
-def save_to_db(df, name):
+def save_to_db(df, name, append=False):
     """
     Extrémně efektivní ukládání: Zkomprimuje DataFrame do formátu Parquet 
     a uloží jako jediný malý soubor do Supabase Storage.
+    Pokud je append=True, nejdřív stáhne stará data, připojí k nim nová a vyčistí duplicity.
     """
     if supabase is None or df is None or df.empty:
         return False
         
     try:
+        # POKUD CHCEME DATA PŘIPOJIT, NEJPRVE JE STÁHNEME A SLOUČÍME
+        if append:
+            old_df = load_from_db(name)
+            if old_df is not None and not old_df.empty:
+                df = pd.concat([old_df, df], ignore_index=True)
+                
+                # Inteligentní odstranění duplicit (ponecháme vždy nejnovější záznam)
+                if name == 'raw_pick' and 'Transfer Order Number' in df.columns:
+                    df = df.drop_duplicates(subset=['Transfer Order Number', 'Material', 'Confirmation date', 'Confirmation time'], keep='last')
+                elif name == 'raw_vekp' and 'Handling Unit' in df.columns:
+                    df = df.drop_duplicates(subset=['Handling Unit'], keep='last')
+                elif name == 'raw_cats':
+                    c_del_cats = next((c for c in df.columns if str(c).strip().lower() in ['lieferung', 'delivery', 'zakázka']), None)
+                    if c_del_cats:
+                        df = df.drop_duplicates(subset=[c_del_cats], keep='last')
+                    else:
+                        df = df.drop_duplicates(keep='last')
+                elif name == 'raw_queue' and 'Transfer Order Number' in df.columns:
+                    df = df.drop_duplicates(subset=['Transfer Order Number'], keep='last')
+                elif name in ['raw_marm', 'raw_manual'] and 'Material' in df.columns:
+                    df = df.drop_duplicates(subset=['Material'], keep='last')
+                else:
+                    df = df.drop_duplicates(keep='last')
+                    
         # 1. Převedeme data na zkomprimovaný binární Parquet
         buffer = io.BytesIO()
         df.to_parquet(buffer, engine='pyarrow', index=False)
