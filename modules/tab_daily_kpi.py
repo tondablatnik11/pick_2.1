@@ -5,6 +5,7 @@ import plotly.express as px
 import datetime
 import io
 from database import load_from_db
+from modules.utils import safe_hu
 
 try:
     fast_render = st.fragment
@@ -95,75 +96,54 @@ def render_daily_kpi(df_pick, raw_vekp):
                 pick_daily['Hour'] = pick_daily[time_col].apply(get_hour)
                 pick_daily['Category'] = pick_daily.get('Queue', _t('Neznámá fronta', 'Unknown Queue'))
 
-    # --- ZPRACOVÁNÍ DAT: PACK (VEKP) + OPRAVENÁ LOGIKA KATEGORIZACE ---
+    # --- ZPRACOVÁNÍ DAT: PACK (VEKP) --- DOKONALÉ NAPOJENÍ NA ZLATOU LOGIKU ---
     pack_daily = pd.DataFrame()
     if raw_vekp is not None and not raw_vekp.empty:
-        df_v = raw_vekp.copy()
-        date_col_v = next((c for c in df_v.columns if 'CREATED ON' in str(c).upper()), None)
-        time_col_v = next((c for c in df_v.columns if 'TIME' in str(c).upper()), None)
+        # Importujeme funkci přímo z Billing tabu, aby proběhl identický výpočet kategorií
+        from modules.tab_billing import cached_billing_logic_v28
         
-        if date_col_v and time_col_v:
-            df_v['TempDate'] = pd.to_datetime(df_v[date_col_v], errors='coerce').dt.strftime('%Y-%m-%d')
-            pack_daily = df_v[df_v['TempDate'] == sel_date_str].copy()
+        # Načteme potřebná podkladová data z DB
+        df_vepo = load_from_db('raw_vepo')
+        df_cats = load_from_db('raw_cats')
+        voll_set = st.session_state.get('voll_set', set())
+        
+        qc_col = 'Delivery'
+        if df_pick is not None and not df_pick.empty and 'Transfer Order Number' in df_pick.columns:
+            qc_col = 'Transfer Order Number'
             
-            if not pack_daily.empty:
-                pack_daily['Shift'] = pack_daily[time_col_v].apply(get_shift)
-                pack_daily['Hour'] = pack_daily[time_col_v].apply(get_hour)
+        # Získáme detailní výpis ZŮČTOVANÝCH HU i s jejich Kategorií (N Vollpalette atd.)
+        _, df_hu_details = cached_billing_logic_v28(df_pick, raw_vekp, df_vepo, df_cats, qc_col, voll_set)
+        
+        if df_hu_details is not None and not df_hu_details.empty:
+            df_v = raw_vekp.copy()
+            c_hu_int = next((c for c in df_v.columns if "Internal HU" in str(c) or "HU-Nummer intern" in str(c)), df_v.columns[0])
+            date_col_v = next((c for c in df_v.columns if 'CREATED ON' in str(c).upper() or 'ERFASST AM' in str(c).upper()), None)
+            time_col_v = next((c for c in df_v.columns if 'TIME' in str(c).upper() or 'UHRZEIT' in str(c).upper()), None)
+            
+            if date_col_v and time_col_v:
+                # Očistíme klíče pro přesné spárování
+                df_v['Clean_HU_Int'] = df_v[c_hu_int].apply(safe_hu)
+                df_hu_details['Clean_HU_Int'] = df_hu_details['HU_Int'].apply(safe_hu)
                 
-                # Iniciační prázdná hodnota
-                pack_daily['Category'] = np.nan
-                mapped = False
+                # Vytvoříme join - Přidáme k fakturačním datům čas jejich fyzického vytvoření
+                pack_merged = pd.merge(
+                    df_hu_details[['Clean_HU_Int', 'Category_Full']], 
+                    df_v[['Clean_HU_Int', date_col_v, time_col_v]], 
+                    on='Clean_HU_Int', 
+                    how='inner'
+                )
                 
-                del_vekp = next((c for c in pack_daily.columns if 'GENERATED DELIVERY' in str(c).upper() or 'DELIVERY' in str(c).upper()), None)
+                # Ostraníme možné duplicity (1 kořenová paleta = 1 fakturovaná jednotka)
+                pack_merged = pack_merged.drop_duplicates('Clean_HU_Int')
                 
-                if del_vekp:
-                    pack_daily['Clean_Del'] = pack_daily[del_vekp].astype(str).str.strip().str.replace(r'\.0$', '', regex=True).str.lstrip('0')
-                    
-                    # 1. Metoda: Přesné mapování HUs z detailu Fakturace
-                    df_hu = st.session_state.get('debug_hu_details')
-                    hu_vekp = next((c for c in pack_daily.columns if 'HANDLING UNIT EXTERNAL' in str(c).upper() or 'HANDLING UNIT' in str(c).upper() or 'EXIDV' in str(c).upper()), None)
-                    
-                    if df_hu is not None and not df_hu.empty and hu_vekp and 'HU_Ext' in df_hu.columns:
-                        pack_daily['Clean_HU'] = pack_daily[hu_vekp].astype(str).str.strip().str.lstrip('0')
-                        b_df = df_hu.copy()
-                        b_df['Clean_HU'] = b_df['HU_Ext'].astype(str).str.strip().str.lstrip('0')
-                        cat_map = b_df.drop_duplicates('Clean_HU').set_index('Clean_HU')['Category_Full'].to_dict()
-                        
-                        test_map = pack_daily['Clean_HU'].map(cat_map)
-                        if test_map.notna().any():
-                            pack_daily['Category'] = test_map
-                            mapped = True
-                            
-                    # 2. Metoda: Mapování přes číslo zakázky (Delivery) z Fakturace
-                    if not mapped:
-                        billing_df = st.session_state.get('billing_df')
-                        if billing_df is not None and not billing_df.empty and 'Category_Full' in billing_df.columns:
-                            del_bill = next((c for c in billing_df.columns if 'CLEAN_DEL' in str(c).upper() or 'DELIVERY' in str(c).upper()), None)
-                            if del_bill:
-                                b_df = billing_df.copy()
-                                b_df['Clean_Del'] = b_df[del_bill].astype(str).str.strip().str.replace(r'\.0$', '', regex=True).str.lstrip('0')
-                                cat_map = b_df.drop_duplicates('Clean_Del').set_index('Clean_Del')['Category_Full'].to_dict()
-                                
-                                test_map = pack_daily['Clean_Del'].map(cat_map)
-                                if test_map.notna().any():
-                                    pack_daily['Category'] = test_map
-                                    mapped = True
-                                    
-                    # 3. Metoda: Záložní data z původního číselníku Kategorií
-                    if not mapped:
-                        df_cats = load_from_db('raw_cats')
-                        if df_cats is not None and not df_cats.empty:
-                            c_del_cats = next((c for c in df_cats.columns if str(c).strip().lower() in ['lieferung', 'delivery', 'zakázka']), df_cats.columns[0])
-                            df_cats['Clean_Del'] = df_cats[c_del_cats].astype(str).str.strip().str.replace(r'\.0$', '', regex=True).str.lstrip('0')
-                            if 'Kategorie' in df_cats.columns and 'Art' in df_cats.columns: 
-                                df_cats['Category_Full'] = df_cats['Kategorie'].astype(str).str.strip() + " " + df_cats['Art'].astype(str).str.strip()
-                                cat_map = df_cats.drop_duplicates('Clean_Del').set_index('Clean_Del')['Category_Full'].to_dict()
-                                pack_daily['Category'] = pack_daily['Clean_Del'].map(cat_map)
-
-                    # Vyplnění zbytku pro vizualizaci
-                    pack_daily['Category'] = pack_daily['Category'].fillna(_t('Ostatní / Čeká na výpočet', 'Other / Awaiting Calc'))
-                else:
-                    pack_daily['Category'] = _t('Neznámá (Chybí Delivery)', 'Unknown (Missing Delivery)')
+                # Nyní filtrujeme přesně na požadovaný den
+                pack_merged['TempDate'] = pd.to_datetime(pack_merged[date_col_v], errors='coerce').dt.strftime('%Y-%m-%d')
+                pack_daily = pack_merged[pack_merged['TempDate'] == sel_date_str].copy()
+                
+                if not pack_daily.empty:
+                    pack_daily['Shift'] = pack_daily[time_col_v].apply(get_shift)
+                    pack_daily['Hour'] = pack_daily[time_col_v].apply(get_hour)
+                    pack_daily['Category'] = pack_daily['Category_Full']
 
     # --- 3. VÝSLEDKY A PRODUKTIVITA ---
     st.markdown(f"### 📈 {_t('Výsledky za den:', 'Results for:')} {selected_date.strftime('%d.%m.%Y')}")
@@ -226,6 +206,7 @@ def render_daily_kpi(df_pick, raw_vekp):
                      labels={'Hour': _t('Hodina dne', 'Hour of Day'), 'Volume': _t('Počet úkolů / HU', 'Volume (Tasks / HU)')},
                      template='plotly_white')
         
+        # Transparentní pozadí grafu pro kompatibilitu se světlým/tmavým režimem
         fig.update_layout(
             xaxis=dict(tickmode='linear', tick0=0, dtick=1, range=[-0.5, 23.5]),
             paper_bgcolor='rgba(0,0,0,0)', 
