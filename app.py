@@ -313,11 +313,11 @@ def main():
         st.header(_t("🚫 Vyloučení dat", "🚫 Data Exclusion"))
         exclude_mats_input = st.text_area(_t("Vyloučit materiály (oddělené čárkou/mezerou):", "Exclude materials (comma/space separated):"), help=_t("Vložené materiály budou kompletně smazány z výpočtů.", "Entered materials will be completely removed from calculations."))
 
-        st.divider()
         with st.expander(_t("🛠️ Admin Zóna (Nahrát data do DB)", "🛠️ Admin Zone (Upload to DB)")):
             st.info(_t("Nahrajte Excely sem. Zpracují se do databáze a aplikace poběží bleskově.", "Upload Excel files here. They will be processed into the database."))
             admin_pwd = st.text_input(_t("Heslo:", "Password:"), type="password")
             if admin_pwd == "admin123":
+                append_data = st.checkbox(_t("Připojovat nová data k existujícím (nevymazávat staré)", "Append new data to existing (don't delete old)"), value=True, help=_t("Pokud je zapnuto, stará data v databázi zůstanou a nová se k nim přidají (duplicity se odfiltrují). Vypněte, pokud chcete vyčistit databázi a nahrát zcela nová data od nuly.", "If checked, old data remains and new is added. Uncheck to upload a completely new database from scratch."))
                 uploaded_files = st.file_uploader(_t("Nahrát CSV/Excel", "Upload CSV/Excel"), accept_multiple_files=True)
                 if st.button(_t("Uložit do databáze", "Save to Database"), type="primary") and uploaded_files:
                     with st.spinner(_t("Zpracovávám a ukládám do Supabase...", "Processing and saving...")):
@@ -327,7 +327,7 @@ def main():
                                 if fname.endswith('.xlsx') and 'auswertung' in fname:
                                     aus_xl = pd.ExcelFile(file)
                                     for sn in aus_xl.sheet_names: 
-                                        save_to_db(aus_xl.parse(sn, dtype=str), f"aus_{sn.lower()}")
+                                        save_to_db(aus_xl.parse(sn, dtype=str), f"aus_{sn.lower()}", append_data)
                                     st.success(f"✅ {_t('Uloženo', 'Saved')} (Auswertung): {file.name}")
                                     continue
 
@@ -337,26 +337,26 @@ def main():
                                 cols_up = [str(c).upper() for c in cols]
                                 
                                 if any('DELIVERY' in c for c in cols_up) and any('ACT.QTY' in c for c in cols_up):
-                                    save_to_db(temp_df, 'raw_pick')
+                                    save_to_db(temp_df, 'raw_pick', append_data)
                                     st.success(f"✅ {_t('Uloženo jako Pick Report', 'Saved as Pick Report')}: {file.name}")
                                 elif any('NUMERATOR' in c for c in cols_up) and any('ALTERNATIVE UNIT' in c for c in cols_up): 
-                                    save_to_db(temp_df, 'raw_marm')
+                                    save_to_db(temp_df, 'raw_marm', append_data)
                                     st.success(f"✅ {_t('Uloženo jako MARM', 'Saved as MARM')}: {file.name}")
                                 elif any('HANDLING UNIT' in c for c in cols_up) and any('GENERATED DELIVERY' in c for c in cols_up): 
-                                    save_to_db(temp_df, 'raw_vekp')
+                                    save_to_db(temp_df, 'raw_vekp', append_data)
                                     st.success(f"✅ {_t('Uloženo jako VEKP', 'Saved as VEKP')}: {file.name}")
                                 elif (any('HANDLING UNIT ITEM' in c for c in cols_up) or any('HANDLING UNIT POSITION' in c for c in cols_up)) and any('MATERIAL' in c for c in cols_up): 
-                                    save_to_db(temp_df, 'raw_vepo')
+                                    save_to_db(temp_df, 'raw_vepo', append_data)
                                     st.success(f"✅ {_t('Uloženo jako VEPO', 'Saved as VEPO')}: {file.name}")
-                                elif any('LIEFERUNG' in c for c in cols_up) and any('KATEGORIE' in c for c in cols_up): 
-                                    save_to_db(temp_df, 'raw_cats')
+                                elif (any('LIEFERUNG' in c for c in cols_up) or any('DELIVERY' in c for c in cols_up) or any('ZAKÁZKA' in c for c in cols_up)) and (any('KATEGORIE' in c for c in cols_up) or any('CATEGORY' in c for c in cols_up)): 
+                                    save_to_db(temp_df, 'raw_cats', append_data)
                                     st.success(f"✅ {_t('Uloženo jako Kategorie', 'Saved as Categories')}: {file.name}")
                                 elif any('QUEUE' in c for c in cols_up) and (any('TRANSFER ORDER' in c for c in cols_up) or any('SD DOCUMENT' in c for c in cols_up)): 
-                                    save_to_db(temp_df, 'raw_queue')
+                                    save_to_db(temp_df, 'raw_queue', append_data)
                                     st.success(f"✅ {_t('Uloženo jako Queue', 'Saved as Queue')}: {file.name}")
                                     
                                 elif 'likp' in fname or any('SHIPPING POINT' in c for c in cols_up) or any('VERSANDSTELLE' in c for c in cols_up):
-                                    save_to_db(temp_df, 'raw_likp')
+                                    save_to_db(temp_df, 'raw_likp', append_data)
                                     st.success(f"✅ {_t('Uloženo jako LIKP Report (O vs N)', 'Saved as LIKP Report')}: {file.name}")
                                     
                                 elif 'oe-times' in fname or any('PROCESS' in c for c in cols_up) or any('TIME' in c for c in cols_up):
@@ -374,11 +374,11 @@ def main():
                                             
                                     temp_df.rename(columns=rename_map, inplace=True)
                                     temp_df = temp_df.loc[:, ~temp_df.columns.duplicated()]
-                                    save_to_db(temp_df, 'raw_oe')
+                                    save_to_db(temp_df, 'raw_oe', append_data)
                                     st.success(f"✅ {_t('Uloženo jako OE-Times', 'Saved as OE-Times')}: {file.name}")
                                     
                                 elif len(cols) >= 2 and (any('MATERIAL' in c for c in cols_up) or any('MATERIÁL' in c for c in cols_up)):
-                                    save_to_db(temp_df, 'raw_manual')
+                                    save_to_db(temp_df, 'raw_manual', append_data)
                                     st.success(f"✅ {_t('Uloženo jako Ruční Master Data', 'Saved as Manual Master Data')}: {file.name}")
                                 else:
                                     st.warning(f"⚠️ {_t('Soubor', 'File')} '{file.name}' {_t('nebyl rozpoznán!', 'not recognized!')}")
