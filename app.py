@@ -334,36 +334,49 @@ def main():
                                 temp_df = pd.read_csv(file, dtype=str, sep=None, engine='python') if fname.endswith('.csv') else pd.read_excel(file, dtype=str)
                                 temp_df.columns = temp_df.columns.str.strip()
                                 cols = temp_df.columns.tolist()
-                                cols_up = [str(c).upper() for c in cols]
+                                cols_up = [str(c).upper().strip() for c in cols]
                                 
-                                if any('DELIVERY' in c for c in cols_up) and any('ACT.QTY' in c for c in cols_up):
+                                # 💡 UNIVERZÁLNÍ DETEKCE SLOUPCŮ (Odolná vůči EN/DE/CZ jazykům SAPu)
+                                has_del = any(x in c for c in cols_up for x in ['DELIVERY', 'LIEFERUNG', 'DODÁVKA', 'DODAVKA', 'ZAKÁZKA', 'ZAKAZKA', 'SD DOCUMENT'])
+                                has_hu = any(x in c for c in cols_up for x in ['HANDLING UNIT', 'HU-NUMMER', 'MANIPULAČ', 'MANIPULAC', 'INT. MJ', 'HU'])
+                                has_mat = any(x in c for c in cols_up for x in ['MATERIAL', 'MATERIÁL'])
+                                has_pick_qty = any(x in c for c in cols_up for x in ['ACT.QTY', 'ISTMENGE', 'MNOŽSTVÍ', 'MNOZSTVI', 'QTY'])
+                                has_queue = any('QUEUE' in c for c in cols_up)
+                                has_item = any(x in c for c in cols_up for x in ['ITEM', 'POSITION', 'POLOŽKA', 'POLOZKA', 'PACKED', 'BALEN'])
+                                
+                                # ROZŘAZENÍ:
+                                if has_del and has_pick_qty:
                                     save_to_db(temp_df, 'raw_pick', append_data)
                                     st.success(f"✅ {_t('Uloženo jako Pick Report', 'Saved as Pick Report')}: {file.name}")
+                                    
+                                elif has_queue and (any('TRANSFER ORDER' in c for c in cols_up) or has_del):
+                                    save_to_db(temp_df, 'raw_queue', append_data)
+                                    st.success(f"✅ {_t('Uloženo jako Queue (LTAK)', 'Saved as Queue')}: {file.name}")
+                                    
+                                elif has_hu and has_mat and has_item:
+                                    save_to_db(temp_df, 'raw_vepo', append_data)
+                                    st.success(f"✅ {_t('Uloženo jako VEPO', 'Saved as VEPO')}: {file.name}")
+                                    
+                                elif has_hu and has_del and not has_mat:
+                                    save_to_db(temp_df, 'raw_vekp', append_data)
+                                    st.success(f"✅ {_t('Uloženo jako VEKP', 'Saved as VEKP')}: {file.name}")
+                                    
+                                elif has_del and any(x in c for c in cols_up for x in ['KATEGORIE', 'CATEGORY']):
+                                    save_to_db(temp_df, 'raw_cats', append_data)
+                                    st.success(f"✅ {_t('Uloženo jako Kategorie', 'Saved as Categories')}: {file.name}")
+                                    
                                 elif any('NUMERATOR' in c for c in cols_up) and any('ALTERNATIVE UNIT' in c for c in cols_up): 
                                     save_to_db(temp_df, 'raw_marm', append_data)
                                     st.success(f"✅ {_t('Uloženo jako MARM', 'Saved as MARM')}: {file.name}")
-                                elif any('HANDLING UNIT' in c for c in cols_up) and any('GENERATED DELIVERY' in c for c in cols_up): 
-                                    save_to_db(temp_df, 'raw_vekp', append_data)
-                                    st.success(f"✅ {_t('Uloženo jako VEKP', 'Saved as VEKP')}: {file.name}")
-                                elif (any('HANDLING UNIT ITEM' in c for c in cols_up) or any('HANDLING UNIT POSITION' in c for c in cols_up)) and any('MATERIAL' in c for c in cols_up): 
-                                    save_to_db(temp_df, 'raw_vepo', append_data)
-                                    st.success(f"✅ {_t('Uloženo jako VEPO', 'Saved as VEPO')}: {file.name}")
-                                elif (any('LIEFERUNG' in c for c in cols_up) or any('DELIVERY' in c for c in cols_up) or any('ZAKÁZKA' in c for c in cols_up)) and (any('KATEGORIE' in c for c in cols_up) or any('CATEGORY' in c for c in cols_up)): 
-                                    save_to_db(temp_df, 'raw_cats', append_data)
-                                    st.success(f"✅ {_t('Uloženo jako Kategorie', 'Saved as Categories')}: {file.name}")
-                                elif any('QUEUE' in c for c in cols_up) and (any('TRANSFER ORDER' in c for c in cols_up) or any('SD DOCUMENT' in c for c in cols_up)): 
-                                    save_to_db(temp_df, 'raw_queue', append_data)
-                                    st.success(f"✅ {_t('Uloženo jako Queue', 'Saved as Queue')}: {file.name}")
                                     
                                 elif 'likp' in fname or any('SHIPPING POINT' in c for c in cols_up) or any('VERSANDSTELLE' in c for c in cols_up):
                                     save_to_db(temp_df, 'raw_likp', append_data)
-                                    st.success(f"✅ {_t('Uloženo jako LIKP Report (O vs N)', 'Saved as LIKP Report')}: {file.name}")
+                                    st.success(f"✅ {_t('Uloženo jako LIKP', 'Saved as LIKP')}: {file.name}")
                                     
                                 elif 'oe-times' in fname or any('PROCESS' in c for c in cols_up) or any('TIME' in c for c in cols_up):
                                     rename_map = {}
                                     has_dn = False
                                     has_time = False
-                                    
                                     for orig, up in zip(cols, cols_up):
                                         if not has_dn and ('DN NUMBER' in up or 'DELIVERY' in up or 'DODAVKA' in up):
                                             rename_map[orig] = 'DN NUMBER (SAP)'
@@ -371,18 +384,20 @@ def main():
                                         elif not has_time and ('PROCESS' in up or 'CAS' in up or 'ČAS' in up or 'TIME' in up):
                                             rename_map[orig] = 'Process Time'
                                             has_time = True
-                                            
                                     temp_df.rename(columns=rename_map, inplace=True)
                                     temp_df = temp_df.loc[:, ~temp_df.columns.duplicated()]
                                     save_to_db(temp_df, 'raw_oe', append_data)
                                     st.success(f"✅ {_t('Uloženo jako OE-Times', 'Saved as OE-Times')}: {file.name}")
                                     
-                                elif len(cols) >= 2 and (any('MATERIAL' in c for c in cols_up) or any('MATERIÁL' in c for c in cols_up)):
+                                elif len(cols) >= 2 and has_mat:
                                     save_to_db(temp_df, 'raw_manual', append_data)
                                     st.success(f"✅ {_t('Uloženo jako Ruční Master Data', 'Saved as Manual Master Data')}: {file.name}")
+                                    
                                 else:
-                                    st.warning(f"⚠️ {_t('Soubor', 'File')} '{file.name}' {_t('nebyl rozpoznán!', 'not recognized!')}")
-                                
+                                    # CHYBOVÁ HLÁŠKA S VÝPISEM SLOUPCŮ
+                                    st.error(f"🚨 {_t('Soubor', 'File')} '{file.name}' {_t('nebyl rozpoznán a NEULOŽIL SE do databáze!', 'was not recognized and NOT SAVED!')}")
+                                    st.info(f"🔍 Aplikace v souboru vidí tyto sloupce: {', '.join(cols)}")
+                                    
                             except Exception as e:
                                 st.error(f"❌ {_t('Chyba u souboru', 'Error processing file')} {file.name}: {e}")
                                 
