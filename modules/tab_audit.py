@@ -462,23 +462,25 @@ def render_audit(df_pick, df_vekp, df_vepo, df_oe, queue_count_col, billing_df, 
                 total_used = len(df_sel)
                 monthly_counts = df_sel.groupby('MonthStr').size().reset_index(name='Count')
                 
-                # --- OPRAVA: PŘESNÁ PREDIKCE POUZE Z UZAVŘENÝCH MĚSÍCŮ ---
+                # --- OPRAVA: PŘESNÁ PREDIKCE POUZE Z UZAVŘENÝCH MĚSÍCŮ Z CELÉHO SKLADU ---
                 current_month_str = datetime.date.today().strftime('%Y-%m')
                 df_completed = df_sel[df_sel['MonthStr'] < current_month_str].copy()
+                vekp_completed = vekp_ana[vekp_ana['MonthStr'] < current_month_str].copy()
                 
-                if not df_completed.empty:
+                if not df_completed.empty and not vekp_completed.empty:
                     comp_used = len(df_completed)
                     comp_months = df_completed['MonthStr'].nunique()
                     avg_monthly = comp_used / comp_months
                     
-                    # Pro predikci vezmeme reálně odpracované dny v uzavřených měsících (ignoruje víkendy)
-                    working_days = df_completed['TempDate'].dt.date.nunique()
-                    if working_days < 1: working_days = 1
+                    # Zjistíme, kolik dní sklad reálně pracoval ve všech uzavřených měsících
+                    total_working_days = vekp_completed['TempDate'].dt.date.nunique()
+                    if total_working_days < 1: total_working_days = 1
                     
-                    avg_daily_working = comp_used / working_days
+                    # Denní průměr = spotřeba obalu / VŠECHNY odpracované dny skladu
+                    avg_daily_working = comp_used / total_working_days
                     prediction_21 = avg_daily_working * 21
                     
-                    help_pred = f"Kalkulováno pouze z kompletních měsíců. Průměr {avg_daily_working:.1f} ks na reálně odpracovaný den * 21 dní."
+                    help_pred = f"Kalkulováno z kompletních měsíců. Průměr {avg_daily_working:.2f} ks na jeden odpracovaný den skladu * 21 dní."
                     help_avg = f"Průměr za {comp_months} kompletních měsíců."
                 else:
                     avg_monthly = 0
