@@ -424,7 +424,7 @@ def render_audit(df_pick, df_vekp, df_vepo, df_oe, queue_count_col, billing_df, 
     # 5. SEKCE: SLEDOVÁNÍ A PREDIKCE KONKRÉTNÍHO OBALU
     # ==========================================
     st.markdown("<div class='section-header'><h3>📈 Sledování a predikce obalu (Obalový dashboard)</h3></div>", unsafe_allow_html=True)
-    st.markdown("Zvolte konkrétní druh obalového materiálu ze systému a aplikace spočítá jeho historickou spotřebu, průměry a vytvoří predikci pro další měsíc (z reálně odpracovaných dní).")
+    st.markdown("Zvolte konkrétní druh obalového materiálu ze systému a aplikace spočítá jeho historickou spotřebu, průměry a vytvoří predikci pro zvolený počet pracovních dní.")
 
     if df_vekp is None or df_vekp.empty:
         st.warning("❌ Chybí data z VEKP. Nahrajte prosím report VEKP v Admin Zóně.")
@@ -454,7 +454,12 @@ def render_audit(df_pick, df_vekp, df_vepo, df_oe, queue_count_col, billing_df, 
             # Získáme seznam všech dostupných obalů (odstraníme prázdné a seřadíme abecedně)
             avail_packs = sorted([p for p in vekp_ana[c_pack_ana].astype(str).str.strip().unique().tolist() if p and p.lower() != 'nan'])
             
-            sel_pack = st.selectbox("Vyberte obalový materiál k detailní analýze:", options=["— Vyberte obalový materiál —"] + avail_packs)
+            # Interaktivní vstupy (Dva sloupce pro lepší vzhled)
+            c_sel1, c_sel2 = st.columns([2, 1])
+            with c_sel1:
+                sel_pack = st.selectbox("Vyberte obalový materiál k detailní analýze:", options=["— Vyberte obalový materiál —"] + avail_packs)
+            with c_sel2:
+                predict_days = st.number_input("Počet odpracovaných dní pro predikci:", min_value=1, max_value=100, value=23, step=1, help="Na kolik pracovních dní dopředu potřebujete materiál predikovat? Výchozí hodnota je 23 dní.")
             
             if sel_pack and sel_pack != "— Vyberte obalový materiál —":
                 df_sel = vekp_ana[vekp_ana[c_pack_ana].astype(str).str.strip() == sel_pack].copy()
@@ -462,7 +467,7 @@ def render_audit(df_pick, df_vekp, df_vepo, df_oe, queue_count_col, billing_df, 
                 total_used = len(df_sel)
                 monthly_counts = df_sel.groupby('MonthStr').size().reset_index(name='Count')
                 
-                # --- OPRAVA: PŘESNÁ PREDIKCE POUZE Z UZAVŘENÝCH MĚSÍCŮ Z CELÉHO SKLADU ---
+                # --- PŘESNÁ PREDIKCE POUZE Z UZAVŘENÝCH MĚSÍCŮ Z CELÉHO SKLADU ---
                 current_month_str = datetime.date.today().strftime('%Y-%m')
                 df_completed = df_sel[df_sel['MonthStr'] < current_month_str].copy()
                 vekp_completed = vekp_ana[vekp_ana['MonthStr'] < current_month_str].copy()
@@ -478,13 +483,13 @@ def render_audit(df_pick, df_vekp, df_vepo, df_oe, queue_count_col, billing_df, 
                     
                     # Denní průměr = spotřeba obalu / VŠECHNY odpracované dny skladu
                     avg_daily_working = comp_used / total_working_days
-                    prediction_21 = avg_daily_working * 21
+                    prediction_val = avg_daily_working * predict_days
                     
-                    help_pred = f"Kalkulováno z kompletních měsíců. Průměr {avg_daily_working:.2f} ks na jeden odpracovaný den skladu * 21 dní."
+                    help_pred = f"Kalkulováno z kompletních měsíců. Průměr {avg_daily_working:.2f} ks na jeden odpracovaný den skladu * {predict_days} dní."
                     help_avg = f"Průměr za {comp_months} kompletních měsíců."
                 else:
                     avg_monthly = 0
-                    prediction_21 = 0
+                    prediction_val = 0
                     help_pred = "Nedostatek dat z kompletních měsíců pro výpočet spolehlivé predikce."
                     help_avg = "Zatím není uzavřen ani jeden kompletní měsíc v datech."
 
@@ -496,7 +501,7 @@ def render_audit(df_pick, df_vekp, df_vepo, df_oe, queue_count_col, billing_df, 
                 
                 if not df_completed.empty:
                     c2.metric("📅 Průměrná měsíční spotřeba", f"{int(avg_monthly)} ks", help=help_avg)
-                    c3.metric("🔮 Predikce na další měsíc (21 prac. dní)", f"{int(prediction_21)} ks", help=help_pred)
+                    c3.metric(f"🔮 Predikce ({predict_days} prac. dní)", f"{int(prediction_val)} ks", help=help_pred)
                 else:
                     c2.metric("📅 Průměrná měsíční spotřeba", "Čeká na data", help=help_avg)
                     c3.metric("🔮 Predikce na další měsíc", "Čeká na data", help=help_pred)
