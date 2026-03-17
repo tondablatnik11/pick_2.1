@@ -3,6 +3,8 @@ import pandas as pd
 import numpy as np
 import io
 import re
+import plotly.express as px
+import plotly.graph_objects as go
 from modules.utils import t, get_match_key, safe_del, safe_hu
 
 try:
@@ -34,7 +36,7 @@ def render_audit(df_pick, df_vekp, df_vepo, df_oe, queue_count_col, billing_df, 
             c_kat = next((c for c, l in zip(df_ctrl.columns, cols_low) if 'kategorie' in l or 'category' in l), None)
             c_art = next((c for c, l in zip(df_ctrl.columns, cols_low) if l == 'art' or 'type' in l), None)
             
-            # ZDE JE TA OPRAVA: Hledáme přesně sloupec Anzahl Packstuck
+            # Hledáme přesně sloupec Anzahl Packstuck
             c_anzahl = next((c for c, l in zip(df_ctrl.columns, cols_low) if 'anzahl' in l or 'packstuck' in l or 'packstück' in l), None)
             
             if not (c_del and c_kat and c_art):
@@ -355,7 +357,7 @@ def render_audit(df_pick, df_vekp, df_vepo, df_oe, queue_count_col, billing_df, 
     # ==========================================
     # 4. SEKCE: HROMADNÁ ANALÝZA OBALOVÉHO MATERIÁLU
     # ==========================================
-    st.markdown("<div class='section-header'><h3>📦 Hromadná analýza obalového materiálu</h3></div>", unsafe_allow_html=True)
+    st.markdown("<div class='section-header'><h3>📦 Hromadná analýza obalového materiálu (Podle zakázek)</h3></div>", unsafe_allow_html=True)
     st.markdown("Vložte seznam zakázek (Delivery) a zjistěte, kolik a jakých obalů (palet, krabic) na ně bylo celkem použito.")
 
     order_input = st.text_area("Seznam zakázek (můžete zkopírovat sloupec z Excelu):", height=150, placeholder="Příklad:\n4941120299\n4941123347\n4941129519")
@@ -366,11 +368,11 @@ def render_audit(df_pick, df_vekp, df_vepo, df_oe, queue_count_col, billing_df, 
         elif df_vekp is None or df_vekp.empty:
             st.error("❌ Chybí data z VEKP. Nahrajte prosím report VEKP v Admin Zóně.")
         else:
-            # 1. Zpracování zadání
+            # Zpracování zadání
             raw_orders = re.split(r'[,\s\n]+', order_input.strip())
             clean_orders = [safe_del(o) for o in raw_orders if o]
 
-            # 2. Očištění VEKP a vyhledání sloupců
+            # Očištění VEKP a vyhledání sloupců
             vekp_pack = df_vekp.copy()
             cols_lower = [str(c).lower().strip() for c in vekp_pack.columns]
 
@@ -381,14 +383,12 @@ def render_audit(df_pick, df_vekp, df_vepo, df_oe, queue_count_col, billing_df, 
             if not c_del or not c_pack:
                 st.error(f"🚨 Nepodařilo se najít sloupec pro Zakázku nebo Obalový materiál ve VEKP. \nNalezené sloupce: {list(vekp_pack.columns)}")
             else:
-                # 3. Filtrace dat
                 vekp_pack['Clean_Del'] = vekp_pack[c_del].apply(safe_del)
                 filtered_vekp = vekp_pack[vekp_pack['Clean_Del'].isin(clean_orders)].copy()
 
                 if filtered_vekp.empty:
                     st.warning("❌ Pro zadané zakázky nebyly ve VEKP nalezeny žádné systémové obaly.")
                 else:
-                    # 4. Agregace obalů
                     if c_hu:
                         pack_summary = filtered_vekp.groupby(c_pack)[c_hu].nunique().reset_index()
                         pack_summary.columns = ['Obalový materiál / Materiálové číslo', 'Počet použitých kusů']
@@ -398,7 +398,6 @@ def render_audit(df_pick, df_vekp, df_vepo, df_oe, queue_count_col, billing_df, 
 
                     pack_summary = pack_summary.sort_values(by='Počet použitých kusů', ascending=False)
 
-                    # 5. Zobrazení výsledků
                     found_orders = filtered_vekp['Clean_Del'].nunique()
                     missing_orders = len(set(clean_orders)) - found_orders
 
@@ -417,3 +416,80 @@ def render_audit(df_pick, df_vekp, df_vepo, df_oe, queue_count_col, billing_df, 
                     detail_df = filtered_vekp[['Clean_Del', c_pack, c_hu] if c_hu else ['Clean_Del', c_pack]].copy()
                     detail_df.columns = ['Zakázka', 'Obalový materiál', 'Manipulační jednotka (HU)'] if c_hu else ['Zakázka', 'Obalový materiál']
                     st.dataframe(detail_df, hide_index=True, use_container_width=True)
+
+    st.divider()
+
+    # ==========================================
+    # 5. SEKCE: SLEDOVÁNÍ A PREDIKCE KONKRÉTNÍHO OBALU
+    # ==========================================
+    st.markdown("<div class='section-header'><h3>📈 Sledování a predikce obalu (Obalový dashboard)</h3></div>", unsafe_allow_html=True)
+    st.markdown("Zvolte konkrétní druh obalového materiálu ze systému a aplikace spočítá jeho historickou spotřebu, průměry a vytvoří predikci pro další měsíc.")
+
+    if df_vekp is None or df_vekp.empty:
+        st.warning("❌ Chybí data z VEKP. Nahrajte prosím report VEKP v Admin Zóně.")
+    else:
+        vekp_ana = df_vekp.copy()
+        cols_lower_ana = [str(c).lower().strip() for c in vekp_ana.columns]
+        
+        c_pack_ana = next((c for c, l in zip(vekp_ana.columns, cols_lower_ana) if "packaging materials" in l or "packmittel" in l or "obalový materiál" in l or "obal" in l), None)
+        c_date_ana = next((c for c, l in zip(vekp_ana.columns, cols_lower_ana) if "created on" in l or "erfasst am" in l or "datum" in l or "date" in l), None)
+        c_del_ana = next((c for c, l in zip(vekp_ana.columns, cols_lower_ana) if "delivery" in l or "lieferung" in l or "dodávka" in l or "zakázka" in l), None)
+        c_hu_ana = next((c for c, l in zip(vekp_ana.columns, cols_lower_ana) if "internal hu" in l or "hu-nummer intern" in l or "handling unit" == l or "manipul" in l), None)
+
+        if not c_pack_ana or not c_date_ana:
+            st.warning(f"⚠️ Nelze provést analýzu: Ve VEKP chybí sloupec pro Obalový materiál nebo Datum vytvoření. \nNalezené sloupce: {list(vekp_ana.columns)}")
+        else:
+            # Sjednotíme data a vyčistíme prázdné hodnoty
+            vekp_ana['TempDate'] = pd.to_datetime(vekp_ana[c_date_ana], errors='coerce')
+            vekp_ana = vekp_ana.dropna(subset=['TempDate', c_pack_ana])
+            
+            # Abychom nespočítali jeden obal vícekrát, omezíme to na unikátní HU
+            if c_hu_ana:
+                vekp_ana['Clean_HU'] = vekp_ana[c_hu_ana].apply(safe_hu)
+                vekp_ana = vekp_ana.drop_duplicates(subset=['Clean_HU'])
+                
+            vekp_ana['MonthStr'] = vekp_ana['TempDate'].dt.strftime('%Y-%m')
+            
+            # Získáme seznam všech dostupných obalů (odstraníme prázdné a seřadíme abecedně)
+            avail_packs = sorted([p for p in vekp_ana[c_pack_ana].astype(str).str.strip().unique().tolist() if p and p.lower() != 'nan'])
+            
+            sel_pack = st.selectbox("Vyberte obalový materiál k detailní analýze:", options=["— Vyberte obalový materiál —"] + avail_packs)
+            
+            if sel_pack and sel_pack != "— Vyberte obalový materiál —":
+                df_sel = vekp_ana[vekp_ana[c_pack_ana].astype(str).str.strip() == sel_pack].copy()
+                
+                total_used = len(df_sel)
+                monthly_counts = df_sel.groupby('MonthStr').size().reset_index(name='Count')
+                num_months = len(monthly_counts)
+                avg_monthly = total_used / num_months if num_months > 0 else 0
+                
+                first_date = df_sel['TempDate'].min()
+                last_date = df_sel['TempDate'].max()
+                days_diff = (last_date - first_date).days + 1
+                if days_diff < 1: days_diff = 1
+                
+                # Inteligentní predikce: (Celkem / Reálný počet dní, kdy se obal používal) * 21 pracovních dní
+                avg_daily = total_used / days_diff
+                prediction_21 = avg_daily * 21
+                
+                c1, c2, c3 = st.columns(3)
+                c1.metric("📦 Celková historická spotřeba", f"{total_used} ks", help=f"Období od {first_date.strftime('%d.%m.%Y')} do {last_date.strftime('%d.%m.%Y')}")
+                c2.metric("📅 Průměrná měsíční spotřeba", f"{int(avg_monthly)} ks", help=f"Průměr za {num_months} měsíců, ve kterých se obal použil.")
+                c3.metric("🔮 Predikce na další měsíc (21 prac. dní)", f"{int(prediction_21)} ks", help="Kalkulováno z průměrné denní spotřeby obalu a vynásobeno 21 pracovními dny.")
+                
+                # Zobrazení grafu vývoje
+                st.markdown(f"#### 📊 Vývoj spotřeby obalu **{sel_pack}** v čase (Měsíce)")
+                fig = px.bar(monthly_counts, x='MonthStr', y='Count', text='Count')
+                fig.update_traces(textposition='auto', marker_color='#8b5cf6')
+                fig.update_layout(
+                    paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+                    xaxis_title="Měsíc", yaxis_title="Spotřebováno (ks)"
+                )
+                st.plotly_chart(fig, use_container_width=True)
+                
+                # Zobrazení detailní historie zakázek
+                st.markdown("#### 📋 Historie použití (posledních 100 zabalených palet/krabic)")
+                if c_del_ana:
+                    detail = df_sel[[c_del_ana, c_date_ana, c_hu_ana] if c_hu_ana else [c_del_ana, c_date_ana]].sort_values(by=c_date_ana, ascending=False).head(100)
+                    detail.columns = ['Zakázka (Delivery)', 'Datum', 'Manipulační jednotka (HU)'] if c_hu_ana else ['Zakázka (Delivery)', 'Datum']
+                    st.dataframe(detail, hide_index=True, use_container_width=True)
