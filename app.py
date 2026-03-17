@@ -193,7 +193,7 @@ def fetch_and_prep_data(use_marm=True):
             else: df_st[short] = 0.0
         dim_dict = df_st.set_index('Match_Key')[['L', 'W', 'H']].max(axis=1).to_dict()
 
-    df_pick['Box_Sizes_List'] = df_pick['Match_Key'].apply(lambda m: manual_boxes.get(m, box_dict.get(m, [])))
+    df_pick['Box_Sizes_List'] = df_pick['Match_Key'].apply(lambda m: tuple(manual_boxes.get(m, box_dict.get(m, []))))
     df_pick['Piece_Weight_KG'] = df_pick['Match_Key'].map(weight_dict).fillna(0.0)
     df_pick['Piece_Max_Dim_CM'] = df_pick['Match_Key'].map(dim_dict).fillna(0.0)
 
