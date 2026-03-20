@@ -19,40 +19,47 @@ def render_admins(df_vekp, df_likp):
     # SEKCE 1: TRACKING ZÁSILEK (UPS / FEDEX)
     # ==========================================
     st.markdown("#### 🌍 Sledování zásilek (Tracking)")
+    st.write("Zadejte sledovací číslo (Bill of lading) pro vyhledání příslušné zakázky a zobrazení odkazu na sledování.")
+    
     if df_likp is not None and not df_likp.empty:
         c_del_likp = next((c for c in df_likp.columns if "DELIVERY" in str(c).upper() or "LIEFERUNG" in str(c).upper() or "DODÁVKA" in str(c).upper()), None)
         c_bol = next((c for c in df_likp.columns if "BILL OF LADING" in str(c).upper() or "PROHLÁŠENÍ" in str(c).upper() or "NÁKLADNÍ" in str(c).upper()), None)
         
         if c_del_likp and c_bol:
-            df_likp['Clean_Del'] = df_likp[c_del_likp].apply(safe_del)
-            avail_dels = sorted(df_likp[df_likp[c_bol].notna() & (df_likp[c_bol] != '')]['Clean_Del'].unique().tolist())
+            # Textové vyhledávací pole pro rychlé vložení čísla balíku
+            track_input = st.text_input("🔍 Hledat podle Bill of lading (Tracking ID):", placeholder="Např. 1Z1J... nebo 8832...").strip()
             
-            c_tr1, c_tr2 = st.columns([2, 1])
-            with c_tr1: sel_del_track = st.selectbox("Vyberte zakázku (Delivery) pro zobrazení Trackingu:", options=[""] + avail_dels)
-            
-            if sel_del_track:
-                row = df_likp[df_likp['Clean_Del'] == sel_del_track].iloc[0]
-                track_id = str(row[c_bol]).strip()
+            if track_input:
+                # Prohledáme LIKP (ignurujeme velikost písmen)
+                match_df = df_likp[df_likp[c_bol].astype(str).str.contains(track_input, case=False, na=False)]
                 
-                st.info(f"**Tracking ID:** `{track_id}`")
-                
-                # Chytrá detekce dopravce
-                if track_id.upper().startswith('1Z'):
-                    url = f"https://www.ups.com/track?tracknum={track_id}"
-                    st.markdown(f"📦 Detekováno **UPS**. [➡️ Klikněte zde pro sledování zásilky na webu UPS]({url})")
-                elif track_id.isdigit() and len(track_id) >= 10:
-                    url = f"https://www.fedex.com/fedextrack/?trknbr={track_id}"
-                    st.markdown(f"📦 Detekováno **FedEx**. [➡️ Klikněte zde pro sledování zásilky na webu FedEx]({url})")
+                if not match_df.empty:
+                    for _, row in match_df.iterrows():
+                        track_id = str(row[c_bol]).strip()
+                        del_id = safe_del(row[c_del_likp])
+                        
+                        st.success(f"✅ Nalezeno! Zásilka **{track_id}** patří k zakázce (Delivery): **{del_id}**")
+                        
+                        # Chytrá detekce dopravce
+                        if track_id.upper().startswith('1Z'):
+                            url = f"https://www.ups.com/track?tracknum={track_id}"
+                            st.markdown(f"📦 Detekováno **UPS**. [➡️ Klikněte zde pro sledování zásilky na webu UPS]({url})")
+                        elif track_id.isdigit() and len(track_id) >= 10:
+                            url = f"https://www.fedex.com/fedextrack/?trknbr={track_id}"
+                            st.markdown(f"📦 Detekováno **FedEx**. [➡️ Klikněte zde pro sledování zásilky na webu FedEx]({url})")
+                        else:
+                            st.warning("Dopravce nebyl automaticky rozpoznán. Zkuste tyto odkazy:")
+                            st.markdown(f"[🔗 Zkusit UPS](https://www.ups.com/track?tracknum={track_id}) | [🔗 Zkusit FedEx](https://www.fedex.com/fedextrack/?trknbr={track_id})")
+                        st.divider()
                 else:
-                    st.warning("Dopravce nebyl automaticky rozpoznán. Zkuste tyto odkazy:")
-                    st.markdown(f"[🔗 Zkusit UPS](https://www.ups.com/track?tracknum={track_id}) | [🔗 Zkusit FedEx](https://www.fedex.com/fedextrack/?trknbr={track_id})")
-        else: st.warning("V LIKP reportu chybí sloupec 'Bill of lading' (Číslo balíku).")
-    else: st.info("Pro funkci Trackingu nahrajte report LIKP.")
+                    st.error(f"❌ Číslo zásilky '{track_input}' nebylo v reportu LIKP nalezeno.")
+        else: st.warning("V LIKP reportu chybí sloupec 'Bill of lading' nebo 'Delivery'.")
+    else: st.info("Pro funkci Trackingu nahrajte report LIKP v Admin Zóně.")
 
     st.divider()
 
     # ==========================================
-    # SEKCE 2: PŘESUNUTO Z AUDITU - HROMADNÁ ANALÝZA OBALŮ
+    # SEKCE 2: HROMADNÁ ANALÝZA OBALŮ
     # ==========================================
     st.markdown("#### 📦 Hromadná analýza obalového materiálu (Podle zakázek)")
     order_input = st.text_area("Seznam zakázek (můžete zkopírovat sloupec z Excelu):", height=100, placeholder="4941120299\n4941123347")
@@ -82,40 +89,76 @@ def render_admins(df_vekp, df_likp):
     st.divider()
 
     # ==========================================
-    # SEKCE 3: PŘESUNUTO Z AUDITU - DASHBOARD A PREDIKCE
+    # SEKCE 3: DASHBOARD A PREDIKCE (S GRAFY)
     # ==========================================
     st.markdown("#### 📈 Sledování a predikce obalu pro Nákup")
     if df_vekp is not None and not df_vekp.empty:
         cols_lower_ana = [str(c).lower().strip() for c in df_vekp.columns]
-        c_pack_ana = next((c for c, l in zip(df_vekp.columns, cols_lower_ana) if "packaging materials" in l or "packmittel" in l), None)
-        c_date_ana = next((c for c, l in zip(df_vekp.columns, cols_lower_ana) if "created on" in l or "erfasst am" in l or "datum" in l), None)
-        c_hu_ana = next((c for c, l in zip(df_vekp.columns, cols_lower_ana) if "internal hu" in l or "hu-nummer intern" in l), None)
+        c_pack_ana = next((c for c, l in zip(df_vekp.columns, cols_lower_ana) if "packaging materials" in l or "packmittel" in l or "obalový materiál" in l or "obal" in l), None)
+        c_date_ana = next((c for c, l in zip(df_vekp.columns, cols_lower_ana) if "created on" in l or "erfasst am" in l or "datum" in l or "date" in l), None)
+        c_del_ana = next((c for c, l in zip(df_vekp.columns, cols_lower_ana) if "delivery" in l or "lieferung" in l or "dodávka" in l or "zakázka" in l), None)
+        c_hu_ana = next((c for c, l in zip(df_vekp.columns, cols_lower_ana) if "internal hu" in l or "hu-nummer intern" in l or "handling unit" == l or "manipul" in l), None)
 
         if c_pack_ana and c_date_ana:
             vekp_ana = df_vekp.dropna(subset=[c_pack_ana]).copy()
             vekp_ana['TempDate'] = pd.to_datetime(vekp_ana[c_date_ana], errors='coerce')
-            if c_hu_ana: vekp_ana = vekp_ana.drop_duplicates(subset=[c_hu_ana])
+            
+            # Očištění unikátních HU, abychom nespočítali stejnou paletu vícekrát
+            if c_hu_ana: 
+                vekp_ana['Clean_HU'] = vekp_ana[c_hu_ana].apply(safe_hu)
+                vekp_ana = vekp_ana.drop_duplicates(subset=['Clean_HU'])
+                
             vekp_ana['MonthStr'] = vekp_ana['TempDate'].dt.strftime('%Y-%m')
             
             avail_packs = sorted([p for p in vekp_ana[c_pack_ana].astype(str).unique() if p and p.lower() != 'nan'])
             
             c_sel1, c_sel2 = st.columns([2, 1])
-            with c_sel1: sel_pack = st.selectbox("Vyberte obalový materiál:", options=["— Vyberte obal —"] + avail_packs)
-            with c_sel2: predict_days = st.number_input("Počet dní pro predikci:", min_value=1, value=23)
+            with c_sel1: sel_pack = st.selectbox("Vyberte obalový materiál k detailní analýze:", options=["— Vyberte obal —"] + avail_packs)
+            with c_sel2: predict_days = st.number_input("Počet odpracovaných dní pro predikci:", min_value=1, value=23)
             
             if sel_pack != "— Vyberte obal —":
-                df_sel = vekp_ana[vekp_ana[c_pack_ana].astype(str) == sel_pack]
-                total_used = len(df_sel)
-                curr_month = datetime.date.today().strftime('%Y-%m')
+                df_sel = vekp_ana[vekp_ana[c_pack_ana].astype(str) == sel_pack].copy()
                 
+                total_used = len(df_sel)
+                monthly_counts = df_sel.groupby('MonthStr').size().reset_index(name='Count')
+                
+                curr_month = datetime.date.today().strftime('%Y-%m')
                 df_comp = df_sel[df_sel['MonthStr'] < curr_month]
                 vk_comp = vekp_ana[vekp_ana['MonthStr'] < curr_month]
                 
+                c1, c2, c3 = st.columns(3)
+                
                 if not df_comp.empty and not vk_comp.empty:
+                    comp_used = len(df_comp)
+                    comp_months = df_comp['MonthStr'].nunique()
+                    avg_monthly = comp_used / comp_months
+                    
                     work_days = vk_comp['TempDate'].dt.date.nunique() or 1
-                    avg_daily = len(df_comp) / work_days
+                    avg_daily = comp_used / work_days
                     pred = int(avg_daily * predict_days)
-                    c1, c2 = st.columns(2)
+                    
                     c1.metric("📦 Historická spotřeba", f"{total_used} ks")
-                    c2.metric(f"🔮 Predikce ({predict_days} dní)", f"{pred} ks")
-                else: st.info("Nedostatek historických dat pro predikci.")
+                    c2.metric("📅 Průměrná měsíční spotřeba", f"{int(avg_monthly)} ks")
+                    c3.metric(f"🔮 Predikce ({predict_days} prac. dní)", f"{pred} ks")
+                else: 
+                    c1.metric("📦 Historická spotřeba", f"{total_used} ks")
+                    c2.metric("📅 Průměrná měsíční spotřeba", "Čeká na data")
+                    c3.metric(f"🔮 Predikce ({predict_days} dní)", "Čeká na data")
+                    st.info("Nedostatek dat z kompletních měsíců pro výpočet spolehlivé predikce.")
+
+                # --- VRÁCENÉ GRAFY A HISTORIE ---
+                st.markdown(f"#### 📊 Vývoj spotřeby obalu **{sel_pack}** v čase (Měsíce)")
+                if not monthly_counts.empty:
+                    fig = px.bar(monthly_counts, x='MonthStr', y='Count', text='Count')
+                    fig.update_traces(textposition='auto', marker_color='#8b5cf6')
+                    fig.update_layout(
+                        paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+                        xaxis_title="Měsíc", yaxis_title="Spotřebováno (ks)"
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
+                
+                st.markdown("#### 📋 Historie použití (posledních 100 zabalených palet/krabic)")
+                if c_del_ana:
+                    detail = df_sel[[c_del_ana, c_date_ana, c_hu_ana] if c_hu_ana else [c_del_ana, c_date_ana]].sort_values(by=c_date_ana, ascending=False).head(100)
+                    detail.columns = ['Zakázka (Delivery)', 'Datum', 'Manipulační jednotka (HU)'] if c_hu_ana else ['Zakázka (Delivery)', 'Datum']
+                    st.dataframe(detail, hide_index=True, use_container_width=True)
