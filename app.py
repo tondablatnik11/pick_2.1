@@ -118,7 +118,6 @@ def fetch_and_prep_data(use_marm=True):
     df_pick_raw = load_from_db('raw_pick')
     if df_pick_raw is None or df_pick_raw.empty: return None
 
-    df_marm_raw = load_from_db('raw_marm') if use_marm else None
     df_queue_raw = load_from_db('raw_queue')
     df_manual_raw = load_from_db('raw_manual')
 
@@ -157,9 +156,11 @@ def fetch_and_prep_data(use_marm=True):
             df_pick['Queue'] = df_pick['Delivery'].map(q_map).fillna('N/A')
         df_pick = df_pick[df_pick['Queue'].astype(str).str.upper() != 'CLEARANCE'].copy()
 
+    # --- 1. RUČNÍ MASTER DATA ---
     manual_boxes = {}
     if df_manual_raw is not None and not df_manual_raw.empty:
-        c_mat, c_pkg = df_manual_raw.columns[0], df_manual_raw.columns[1]
+        c_mat = next((c for c in df_manual_raw.columns if 'MATERIAL' in str(c).upper() or 'MATERIÁL' in str(c).upper()), df_manual_raw.columns[0])
+        c_pkg = df_manual_raw.columns[1] if len(df_manual_raw.columns) > 1 else df_manual_raw.columns[0]
         for _, row in df_manual_raw.iterrows():
             raw_mat = str(row[c_mat])
             if raw_mat.upper() in ['NAN', 'NONE', '']: continue
@@ -170,32 +171,53 @@ def fetch_and_prep_data(use_marm=True):
             if not ext and re.search(r'po\s*kusech', pkg, re.IGNORECASE): ext = [1]
             if ext: manual_boxes[mat_key] = ext
 
+    # --- 2. MARM MASTER DATA (OPRAVENO: Bezpečná detekce sloupců a desetiných čárek) ---
     box_dict, weight_dict, dim_dict = {}, {}, {}
     if use_marm:
         df_marm_raw = load_from_db('raw_marm')
         if df_marm_raw is not None and not df_marm_raw.empty:
-            df_marm_raw['Match_Key'] = get_match_key_vectorized(df_marm_raw['Material'])
-            df_boxes = df_marm_raw[df_marm_raw['Alternative Unit of Measure'].isin(BOX_UNITS)].copy()
-            df_boxes['Numerator'] = pd.to_numeric(df_boxes['Numerator'], errors='coerce').fillna(0)
-            box_dict = df_boxes.groupby('Match_Key')['Numerator'].apply(lambda g: sorted([int(x) for x in g if x > 1], reverse=True)).to_dict()
+            c_mat = next((c for c in df_marm_raw.columns if 'MATERIAL' in str(c).upper() or 'MATERIÁL' in str(c).upper()), df_marm_raw.columns[0])
+            c_num = next((c for c in df_marm_raw.columns if 'NUMERATOR' in str(c).upper() or 'ČITATEL' in str(c).upper()), None)
+            c_den = next((c for c in df_marm_raw.columns if 'DENOMINATR' in str(c).upper() or 'DENOMINATOR' in str(c).upper() or 'JMENOVATEL' in str(c).upper()), None)
+            c_uom = next((c for c in df_marm_raw.columns if 'ALTERNATIVE UNIT' in str(c).upper() or 'ALTERNATIVNÍ' in str(c).upper()), None)
+            c_wgt = next((c for c in df_marm_raw.columns if 'GROSS WEIGHT' in str(c).upper() or 'WEIGHT' in str(c).upper() or 'HRUBÁ' in str(c).upper()), None)
+            c_len = next((c for c in df_marm_raw.columns if 'LENGTH' in str(c).upper() or 'DÉLKA' in str(c).upper()), None)
+            c_wid = next((c for c in df_marm_raw.columns if 'WIDTH' in str(c).upper() or 'ŠÍŘKA' in str(c).upper()), None)
+            c_hei = next((c for c in df_marm_raw.columns if 'HEIGHT' in str(c).upper() or 'VÝŠKA' in str(c).upper()), None)
+            c_uow = next((c for c in df_marm_raw.columns if 'UNIT OF WEIGHT' in str(c).upper() or 'JEDNOTKA HMOTNOSTI' in str(c).upper()), None)
+            c_uod = next((c for c in df_marm_raw.columns if 'UNIT OF DIMENSION' in str(c).upper() or 'JEDNOTKA ROZMĚRU' in str(c).upper()), None)
 
-            df_st = df_marm_raw[df_marm_raw['Alternative Unit of Measure'].isin(['ST', 'PCE', 'KS', 'EA', 'PC'])].copy()
-            df_st['Gross Weight'] = pd.to_numeric(df_st['Gross Weight'], errors='coerce').fillna(0)
-            df_st['Weight_KG'] = np.where(df_st['Unit of Weight'].astype(str).str.upper() == 'G', df_st['Gross Weight'] / 1000.0, df_st['Gross Weight'])
-            weight_dict = df_st.groupby('Match_Key')['Weight_KG'].first().to_dict()
+            df_marm_raw['Match_Key'] = get_match_key_vectorized(df_marm_raw[c_mat])
+            
+            if c_num and c_den and c_uom:
+                # FIX: Vždy přeměníme čárky na tečky, aby to nespadlo do chyby
+                df_marm_raw['Numerator_Clean'] = pd.to_numeric(df_marm_raw[c_num].astype(str).str.replace(',', '.'), errors='coerce').fillna(1)
+                df_marm_raw['Denominator_Clean'] = pd.to_numeric(df_marm_raw[c_den].astype(str).str.replace(',', '.'), errors='coerce').fillna(1)
+                
+                df_boxes = df_marm_raw[df_marm_raw[c_uom].astype(str).str.upper().isin(BOX_UNITS) & (df_marm_raw['Denominator_Clean'] == 1)].copy()
+                box_dict = df_boxes.groupby('Match_Key')['Numerator_Clean'].apply(lambda g: sorted([int(x) for x in g if x > 1], reverse=True)).to_dict()
 
-            def to_cm(val, unit):
-                try:
-                    v = float(val); u = str(unit).upper().strip()
-                    return v / 10.0 if u == 'MM' else v * 100.0 if u == 'M' else v
-                except: return 0.0
+                df_st = df_marm_raw[df_marm_raw['Numerator_Clean'] == 1].drop_duplicates('Match_Key').copy()
+                if c_wgt:
+                    df_st['Gross Weight Clean'] = pd.to_numeric(df_st[c_wgt].astype(str).str.replace(',', '.'), errors='coerce').fillna(0)
+                    if c_uow:
+                        df_st['Weight_KG'] = np.where(df_st[c_uow].astype(str).str.upper() == 'G', df_st['Gross Weight Clean'] / 1000.0, df_st['Gross Weight Clean'])
+                    else:
+                        df_st['Weight_KG'] = df_st['Gross Weight Clean']
+                    weight_dict = df_st.set_index('Match_Key')['Weight_KG'].to_dict()
 
-            for dim_col, short in [('Length', 'L'), ('Width', 'W'), ('Height', 'H')]:
-                if dim_col in df_st.columns: df_st[short] = df_st.apply(lambda r, dc=dim_col: to_cm(r[dc], r.get('Unit of Dimension', 'CM')), axis=1)
-                else: df_st[short] = 0.0
-            dim_dict = df_st.set_index('Match_Key')[['L', 'W', 'H']].max(axis=1).to_dict()
+                def to_cm(val, unit):
+                    try:
+                        v = float(str(val).replace(',', '.')); u = str(unit).upper().strip()
+                        return v / 10.0 if u == 'MM' else v * 100.0 if u == 'M' else v
+                    except: return 0.0
 
-    # 💡 OPRAVA: Tuple zabrání padání cache a rozbití aplikace "unhashable type: list"
+                if c_len and c_wid and c_hei:
+                    for dim_col, short in [(c_len, 'L'), (c_wid, 'W'), (c_hei, 'H')]:
+                        df_st[short] = df_st.apply(lambda r, dc=dim_col: to_cm(r[dc], r.get(c_uod, 'CM') if c_uod else 'CM'), axis=1)
+                    dim_dict = df_st.set_index('Match_Key')[['L', 'W', 'H']].max(axis=1).to_dict()
+
+    # Nastavení krabic přes Tuple formát, aby nehavarovala RAM
     df_pick['Box_Sizes_List'] = df_pick['Match_Key'].apply(lambda m: tuple(manual_boxes.get(m, box_dict.get(m, []))))
     df_pick['Piece_Weight_KG'] = df_pick['Match_Key'].map(weight_dict).fillna(0.0)
     df_pick['Piece_Max_Dim_CM'] = df_pick['Match_Key'].map(dim_dict).fillna(0.0)
@@ -341,7 +363,7 @@ def main():
                                 cols = temp_df.columns.tolist()
                                 cols_up = [str(c).upper().strip() for c in cols]
                                 
-                                # 💡 UNIVERZÁLNÍ A PŘESNÁ DETEKCE SLOUPCŮ (Otisk prstu každého reportu)
+                                # 💡 UNIVERZÁLNÍ A PŘESNÁ DETEKCE SLOUPCŮ
                                 is_pick = any('ACT.QTY' in c or 'ISTMENGE' in c or 'MNOŽSTVÍ (CÍL)' in c for c in cols_up) and any('TRANSFER ORDER' in c or 'TRANSPORTAUFTRAG' in c for c in cols_up)
                                 is_queue = any('QUEUE' in c for c in cols_up) and not is_pick
                                 is_vepo = any('PACKED QUANTITY' in c or 'VEMNG' in c or 'BALENÉ MNOŽSTVÍ' in c for c in cols_up)
