@@ -11,7 +11,7 @@ from modules.utils import t, fast_compute_moves, get_match_key_vectorized, get_m
 
 from modules.tab_dashboard import render_dashboard
 from modules.tab_daily_kpi import render_daily_kpi
-from modules.tab_monthly_kpi import render_monthly_kpi  # <-- PŘIDÁNO: Import nové záložky
+from modules.tab_monthly_kpi import render_monthly_kpi
 from modules.tab_pallets import render_pallets
 from modules.tab_fu import render_fu
 from modules.tab_fu_compare import render_fu_compare
@@ -171,29 +171,32 @@ def fetch_and_prep_data(use_marm=True):
             if ext: manual_boxes[mat_key] = ext
 
     box_dict, weight_dict, dim_dict = {}, {}, {}
-    if df_marm_raw is not None and not df_marm_raw.empty:
-        df_marm_raw['Match_Key'] = get_match_key_vectorized(df_marm_raw['Material'])
-        df_boxes = df_marm_raw[df_marm_raw['Alternative Unit of Measure'].isin(BOX_UNITS)].copy()
-        df_boxes['Numerator'] = pd.to_numeric(df_boxes['Numerator'], errors='coerce').fillna(0)
-        box_dict = df_boxes.groupby('Match_Key')['Numerator'].apply(lambda g: sorted([int(x) for x in g if x > 1], reverse=True)).to_dict()
+    if use_marm:
+        df_marm_raw = load_from_db('raw_marm')
+        if df_marm_raw is not None and not df_marm_raw.empty:
+            df_marm_raw['Match_Key'] = get_match_key_vectorized(df_marm_raw['Material'])
+            df_boxes = df_marm_raw[df_marm_raw['Alternative Unit of Measure'].isin(BOX_UNITS)].copy()
+            df_boxes['Numerator'] = pd.to_numeric(df_boxes['Numerator'], errors='coerce').fillna(0)
+            box_dict = df_boxes.groupby('Match_Key')['Numerator'].apply(lambda g: sorted([int(x) for x in g if x > 1], reverse=True)).to_dict()
 
-        df_st = df_marm_raw[df_marm_raw['Alternative Unit of Measure'].isin(['ST', 'PCE', 'KS', 'EA', 'PC'])].copy()
-        df_st['Gross Weight'] = pd.to_numeric(df_st['Gross Weight'], errors='coerce').fillna(0)
-        df_st['Weight_KG'] = np.where(df_st['Unit of Weight'].astype(str).str.upper() == 'G', df_st['Gross Weight'] / 1000.0, df_st['Gross Weight'])
-        weight_dict = df_st.groupby('Match_Key')['Weight_KG'].first().to_dict()
+            df_st = df_marm_raw[df_marm_raw['Alternative Unit of Measure'].isin(['ST', 'PCE', 'KS', 'EA', 'PC'])].copy()
+            df_st['Gross Weight'] = pd.to_numeric(df_st['Gross Weight'], errors='coerce').fillna(0)
+            df_st['Weight_KG'] = np.where(df_st['Unit of Weight'].astype(str).str.upper() == 'G', df_st['Gross Weight'] / 1000.0, df_st['Gross Weight'])
+            weight_dict = df_st.groupby('Match_Key')['Weight_KG'].first().to_dict()
 
-        def to_cm(val, unit):
-            try:
-                v = float(val); u = str(unit).upper().strip()
-                return v / 10.0 if u == 'MM' else v * 100.0 if u == 'M' else v
-            except: return 0.0
+            def to_cm(val, unit):
+                try:
+                    v = float(val); u = str(unit).upper().strip()
+                    return v / 10.0 if u == 'MM' else v * 100.0 if u == 'M' else v
+                except: return 0.0
 
-        for dim_col, short in [('Length', 'L'), ('Width', 'W'), ('Height', 'H')]:
-            if dim_col in df_st.columns: df_st[short] = df_st.apply(lambda r, dc=dim_col: to_cm(r[dc], r.get('Unit of Dimension', 'CM')), axis=1)
-            else: df_st[short] = 0.0
-        dim_dict = df_st.set_index('Match_Key')[['L', 'W', 'H']].max(axis=1).to_dict()
+            for dim_col, short in [('Length', 'L'), ('Width', 'W'), ('Height', 'H')]:
+                if dim_col in df_st.columns: df_st[short] = df_st.apply(lambda r, dc=dim_col: to_cm(r[dc], r.get('Unit of Dimension', 'CM')), axis=1)
+                else: df_st[short] = 0.0
+            dim_dict = df_st.set_index('Match_Key')[['L', 'W', 'H']].max(axis=1).to_dict()
 
-    df_pick['Box_Sizes_List'] = df_pick['Match_Key'].apply(lambda m: manual_boxes.get(m, box_dict.get(m, [])))
+    # 💡 OPRAVA: Tuple zabrání padání cache a rozbití aplikace "unhashable type: list"
+    df_pick['Box_Sizes_List'] = df_pick['Match_Key'].apply(lambda m: tuple(manual_boxes.get(m, box_dict.get(m, []))))
     df_pick['Piece_Weight_KG'] = df_pick['Match_Key'].map(weight_dict).fillna(0.0)
     df_pick['Piece_Max_Dim_CM'] = df_pick['Match_Key'].map(dim_dict).fillna(0.0)
 
@@ -280,17 +283,19 @@ def main():
             options=[
                 _t("Přehled a Fronty", "Dashboard & Queue"), 
                 _t("Denní KPI (Ráno)", "Daily KPI"),
-                _t("Měsíční KPI (Cíle)", "Monthly KPI"),  # <-- PŘIDÁNO: Nová záložka
+                _t("Měsíční KPI (Cíle)", "Monthly KPI"), 
                 _t("Paletové zakázky", "Pallet Orders"), 
                 _t("Celé palety (FU)", "Full Pallets (FU)"),
                 _t("Porovnání (FU vs SAP)", "Compare (FU vs SAP)"),
                 _t("Materiály (TOP)", "Top Materials"), 
                 _t("Fakturace", "Billing"), 
                 _t("Balení (Packing)", "Packing"), 
+                _t("Sklad (Storage)", "Storage"),
+                _t("Admins", "Admins"),
                 _t("Audit & Rentgen", "Audit & X-Ray"),
                 _t("Nástěnka (Tisk grafů)", "Notice Board (Print)")
             ],
-            icons=["bar-chart-line", "sun", "calendar-check", "box-seam", "boxes", "arrow-left-right", "list-ol", "currency-dollar", "box", "clipboard2-check", "printer"], # <-- PŘIDÁNO: Ikonka "calendar-check"
+            icons=["bar-chart-line", "sun", "calendar-check", "box-seam", "boxes", "arrow-left-right", "list-ol", "currency-dollar", "box", "building", "tools", "clipboard2-check", "printer"],
             menu_icon="cast", 
             default_index=0,
             styles={
@@ -344,37 +349,38 @@ def main():
                                 is_cats = any('KATEGORIE' in c or 'CATEGORY' in c for c in cols_up) and any('DELIVERY' in c or 'LIEFERUNG' in c or 'ZAKÁZKA' in c for c in cols_up)
                                 is_likp = any('SHIPPING POINT' in c or 'VERSANDSTELLE' in c or 'RECEIVING PT' in c or 'MÍSTO' in c for c in cols_up) and not is_vekp
                                 is_marm = any('NUMERATOR' in c or 'ČITATEL' in c for c in cols_up) and any('ALTERNATIVE UNIT' in c or 'ALTERNATIVNÍ' in c for c in cols_up)
+                                is_lt10 = any('AVAILABLE STOCK' in c or 'ZÁSOBA K DISP.' in c for c in cols_up) and any('LAST MOVEMENT' in c or 'POSLEDNÍ POHYB' in c for c in cols_up)
+                                is_lx03 = any('STORAGE BIN TYPE' in c or 'TYP SKLAD.MÍSTA' in c or 'TYP SKLAD MISTA' in c for c in cols_up) and not is_lt10
                                 is_oe = 'oe-times' in fname or any('PROCESS' in c or 'PROCES' in c for c in cols_up) and any('TIME' in c or 'ČAS' in c or 'CAS' in c for c in cols_up)
                                 
                                 # ROZŘAZENÍ:
                                 if is_pick:
                                     save_to_db(temp_df, 'raw_pick', append_data)
                                     st.success(f"✅ {_t('Uloženo jako Pick Report', 'Saved as Pick Report')}: {file.name}")
-                                    
                                 elif is_queue:
                                     save_to_db(temp_df, 'raw_queue', append_data)
                                     st.success(f"✅ {_t('Uloženo jako Queue (LTAK)', 'Saved as Queue')}: {file.name}")
-                                    
                                 elif is_vepo:
                                     save_to_db(temp_df, 'raw_vepo', append_data)
                                     st.success(f"✅ {_t('Uloženo jako VEPO', 'Saved as VEPO')}: {file.name}")
-                                    
                                 elif is_vekp:
                                     save_to_db(temp_df, 'raw_vekp', append_data)
                                     st.success(f"✅ {_t('Uloženo jako VEKP', 'Saved as VEKP')}: {file.name}")
-                                    
                                 elif is_cats:
                                     save_to_db(temp_df, 'raw_cats', append_data)
                                     st.success(f"✅ {_t('Uloženo jako Kategorie', 'Saved as Categories')}: {file.name}")
-                                    
                                 elif is_marm: 
                                     save_to_db(temp_df, 'raw_marm', append_data)
                                     st.success(f"✅ {_t('Uloženo jako MARM', 'Saved as MARM')}: {file.name}")
-                                    
                                 elif is_likp:
                                     save_to_db(temp_df, 'raw_likp', append_data)
                                     st.success(f"✅ {_t('Uloženo jako LIKP', 'Saved as LIKP')}: {file.name}")
-                                    
+                                elif is_lt10:
+                                    save_to_db(temp_df, 'raw_lt10', append_data)
+                                    st.success(f"✅ {_t('Uloženo jako LT10 (Zásoby)', 'Saved as LT10')}: {file.name}")
+                                elif is_lx03:
+                                    save_to_db(temp_df, 'raw_lx03', append_data)
+                                    st.success(f"✅ {_t('Uloženo jako LX03 (Kapacita)', 'Saved as LX03')}: {file.name}")
                                 elif is_oe:
                                     rename_map = {}
                                     has_dn = False
@@ -390,11 +396,9 @@ def main():
                                     temp_df = temp_df.loc[:, ~temp_df.columns.duplicated()]
                                     save_to_db(temp_df, 'raw_oe', append_data)
                                     st.success(f"✅ {_t('Uloženo jako OE-Times', 'Saved as OE-Times')}: {file.name}")
-                                    
                                 elif len(cols) >= 2 and any('MATERIAL' in c or 'MATERIÁL' in c for c in cols_up):
                                     save_to_db(temp_df, 'raw_manual', append_data)
                                     st.success(f"✅ {_t('Uloženo jako Ruční Master Data', 'Saved as Manual Master Data')}: {file.name}")
-                                    
                                 else:
                                     st.error(f"🚨 {_t('Soubor', 'File')} '{file.name}' {_t('nebyl rozpoznán a NEULOŽIL SE do databáze!', 'was not recognized and NOT SAVED!')}")
                                     st.info(f"🔍 Aplikace v souboru vidí tyto sloupce: {', '.join(cols)}")
@@ -432,7 +436,7 @@ def main():
     st.session_state['voll_set'] = data_dict['voll_set']
 
     # ==========================================
-    # NOVÁ LOGIKA PRO FILTROVÁNÍ MĚSÍCŮ
+    # LOGIKA PRO FILTROVÁNÍ MĚSÍCŮ
     # ==========================================
     df_pick['Month'] = df_pick['Date'].dt.to_period('M').astype(str).replace('NaT', _t('Neznámé', 'Unknown'))
     st.sidebar.divider()
@@ -471,27 +475,55 @@ def main():
     progress_bar.empty()
 
     display_q = None
+    
+    # -----------------------------------
+    # ROUTING (LAZY LOADING) ZÁLOŽEK
+    # -----------------------------------
     if selected_page == _t("Přehled a Fronty", "Dashboard & Queue"): 
         display_q = render_dashboard(df_pick, data_dict['queue_count_col'])
+        
     elif selected_page == _t("Denní KPI (Ráno)", "Daily KPI"):            
         render_daily_kpi(df_pick, data_dict['df_vekp'])
-    elif selected_page == _t("Měsíční KPI (Cíle)", "Monthly KPI"):        # <-- PŘIDÁNO: Zobrazení nové záložky
+        
+    elif selected_page == _t("Měsíční KPI (Cíle)", "Monthly KPI"):        
         render_monthly_kpi(df_pick, data_dict['df_vekp'], data_dict['df_vepo'])
+        
     elif selected_page == _t("Paletové zakázky", "Pallet Orders"): 
         render_pallets(df_pick)
+        
     elif selected_page == _t("Celé palety (FU)", "Full Pallets (FU)"): 
         render_fu(df_pick, data_dict['queue_count_col'])
+        
     elif selected_page == _t("Porovnání (FU vs SAP)", "Compare (FU vs SAP)"):
         render_fu_compare(df_pick, st.session_state.get('billing_df'), st.session_state.get('voll_set'), data_dict['queue_count_col'])
+        
     elif selected_page == _t("Materiály (TOP)", "Top Materials"): 
         render_top(df_pick)
+        
     elif selected_page == _t("Fakturace", "Billing"): 
         billing_df = render_billing(df_pick, data_dict['df_vekp'], data_dict['df_vepo'], data_dict['df_cats'], data_dict['queue_count_col'])
         st.session_state['billing_df'] = billing_df
+        
     elif selected_page == _t("Balení (Packing)", "Packing"): 
         render_packing(st.session_state.get('billing_df', pd.DataFrame()), data_dict['df_oe'])
+        
+    elif selected_page == _t("Sklad (Storage)", "Storage"):
+        with st.spinner("🔄 Načítám skladová data a propočítávám 3D rozměry..."):
+            df_lx03 = load_from_db('raw_lx03')
+            df_lt10 = load_from_db('raw_lt10')
+            df_marm = load_from_db('raw_marm')
+            import modules.tab_storage as tab_storage
+            tab_storage.render_storage(df_lx03, df_lt10, df_marm, df_pick)
+
+    elif selected_page == _t("Admins", "Admins"):
+        with st.spinner("🔄 Načítám administrátorské nástroje..."):
+            df_likp = load_from_db('raw_likp')
+            import modules.tab_admins as tab_admins
+            tab_admins.render_admins(data_dict['df_vekp'], df_likp)
+
     elif selected_page == _t("Audit & Rentgen", "Audit & X-Ray"): 
         render_audit(df_pick, data_dict['df_vekp'], data_dict['df_vepo'], data_dict['df_oe'], data_dict['queue_count_col'], st.session_state.get('billing_df', pd.DataFrame()), data_dict['manual_boxes'], data_dict['weight_dict'], data_dict['dim_dict'], data_dict['box_dict'], limit_vahy, limit_rozmeru, kusy_na_hmat)
+        
     elif selected_page == _t("Nástěnka (Tisk grafů)", "Notice Board (Print)"):
         render_board(df_pick, st.session_state.get('billing_df', pd.DataFrame()))
 
