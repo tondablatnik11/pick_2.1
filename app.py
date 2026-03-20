@@ -171,14 +171,13 @@ def fetch_and_prep_data(use_marm=True):
             if not ext and re.search(r'po\s*kusech', pkg, re.IGNORECASE): ext = [1]
             if ext: manual_boxes[mat_key] = ext
 
-    # --- 2. MARM MASTER DATA (OPRAVENO: Bezpečná detekce sloupců a desetiných čárek) ---
+    # --- 2. MARM MASTER DATA (Návrat k původní robustní logice) ---
     box_dict, weight_dict, dim_dict = {}, {}, {}
     if use_marm:
         df_marm_raw = load_from_db('raw_marm')
         if df_marm_raw is not None and not df_marm_raw.empty:
             c_mat = next((c for c in df_marm_raw.columns if 'MATERIAL' in str(c).upper() or 'MATERIÁL' in str(c).upper()), df_marm_raw.columns[0])
             c_num = next((c for c in df_marm_raw.columns if 'NUMERATOR' in str(c).upper() or 'ČITATEL' in str(c).upper()), None)
-            c_den = next((c for c in df_marm_raw.columns if 'DENOMINATR' in str(c).upper() or 'DENOMINATOR' in str(c).upper() or 'JMENOVATEL' in str(c).upper()), None)
             c_uom = next((c for c in df_marm_raw.columns if 'ALTERNATIVE UNIT' in str(c).upper() or 'ALTERNATIVNÍ' in str(c).upper()), None)
             c_wgt = next((c for c in df_marm_raw.columns if 'GROSS WEIGHT' in str(c).upper() or 'WEIGHT' in str(c).upper() or 'HRUBÁ' in str(c).upper()), None)
             c_len = next((c for c in df_marm_raw.columns if 'LENGTH' in str(c).upper() or 'DÉLKA' in str(c).upper()), None)
@@ -189,19 +188,22 @@ def fetch_and_prep_data(use_marm=True):
 
             df_marm_raw['Match_Key'] = get_match_key_vectorized(df_marm_raw[c_mat])
             
-            if c_num and c_den and c_uom:
-                # FIX: Vždy přeměníme čárky na tečky, aby to nespadlo do chyby
-                df_marm_raw['Numerator_Clean'] = pd.to_numeric(df_marm_raw[c_num].astype(str).str.replace(',', '.'), errors='coerce').fillna(1)
-                df_marm_raw['Denominator_Clean'] = pd.to_numeric(df_marm_raw[c_den].astype(str).str.replace(',', '.'), errors='coerce').fillna(1)
+            if c_num and c_uom:
+                # Vyčistíme čitatele od desetinných čárek (10,00 -> 10.00 -> 10)
+                df_marm_raw['Numerator_Clean'] = pd.to_numeric(df_marm_raw[c_num].astype(str).str.replace(',', '.'), errors='coerce').fillna(0)
                 
-                df_boxes = df_marm_raw[df_marm_raw[c_uom].astype(str).str.upper().isin(BOX_UNITS) & (df_marm_raw['Denominator_Clean'] == 1)].copy()
+                # 1. HLEDÁNÍ KRABIC - přesně dle staré funkční logiky
+                df_boxes = df_marm_raw[df_marm_raw[c_uom].astype(str).str.strip().str.upper().isin(BOX_UNITS)].copy()
                 box_dict = df_boxes.groupby('Match_Key')['Numerator_Clean'].apply(lambda g: sorted([int(x) for x in g if x > 1], reverse=True)).to_dict()
 
-                df_st = df_marm_raw[df_marm_raw['Numerator_Clean'] == 1].drop_duplicates('Match_Key').copy()
+                # 2. HLEDÁNÍ VÁHY A ROZMĚRŮ 
+                df_st = df_marm_raw[df_marm_raw[c_uom].astype(str).str.strip().str.upper().isin(['ST', 'PCE', 'KS', 'EA', 'PC'])].copy()
+                df_st = df_st.drop_duplicates('Match_Key') # Zajištění unikátnosti
+                
                 if c_wgt:
                     df_st['Gross Weight Clean'] = pd.to_numeric(df_st[c_wgt].astype(str).str.replace(',', '.'), errors='coerce').fillna(0)
                     if c_uow:
-                        df_st['Weight_KG'] = np.where(df_st[c_uow].astype(str).str.upper() == 'G', df_st['Gross Weight Clean'] / 1000.0, df_st['Gross Weight Clean'])
+                        df_st['Weight_KG'] = np.where(df_st[c_uow].astype(str).str.strip().str.upper() == 'G', df_st['Gross Weight Clean'] / 1000.0, df_st['Gross Weight Clean'])
                     else:
                         df_st['Weight_KG'] = df_st['Gross Weight Clean']
                     weight_dict = df_st.set_index('Match_Key')['Weight_KG'].to_dict()
@@ -217,7 +219,7 @@ def fetch_and_prep_data(use_marm=True):
                         df_st[short] = df_st.apply(lambda r, dc=dim_col: to_cm(r[dc], r.get(c_uod, 'CM') if c_uod else 'CM'), axis=1)
                     dim_dict = df_st.set_index('Match_Key')[['L', 'W', 'H']].max(axis=1).to_dict()
 
-    # Nastavení krabic přes Tuple formát, aby nehavarovala RAM
+    # Převedení na paměťově bezpečný formát Tuple (brání pádu aplikace)
     df_pick['Box_Sizes_List'] = df_pick['Match_Key'].apply(lambda m: tuple(manual_boxes.get(m, box_dict.get(m, []))))
     df_pick['Piece_Weight_KG'] = df_pick['Match_Key'].map(weight_dict).fillna(0.0)
     df_pick['Piece_Max_Dim_CM'] = df_pick['Match_Key'].map(dim_dict).fillna(0.0)
@@ -487,8 +489,17 @@ def main():
             df_pick = df_pick.iloc[0:0].copy()
 
     # ==========================================
-
-    tt, te, tm = fast_compute_moves(df_pick['Qty'].values, df_pick['Queue'].values, df_pick['Removal of total SU'].values, df_pick['Box_Sizes_List'].values, df_pick['Piece_Weight_KG'].values, df_pick['Piece_Max_Dim_CM'].values, limit_vahy, limit_rozmeru, kusy_na_hmat)
+    # VOLÁNÍ KALKULAČKY Z UTILS.PY (Podporuje Tuple bez pádu)
+    # ==========================================
+    tt, te, tm = fast_compute_moves(
+        df_pick['Qty'].values, 
+        df_pick['Queue'].values, 
+        df_pick['Removal of total SU'].values, 
+        df_pick['Box_Sizes_List'].values, 
+        df_pick['Piece_Weight_KG'].values, 
+        df_pick['Piece_Max_Dim_CM'].values, 
+        limit_vahy, limit_rozmeru, kusy_na_hmat
+    )
     df_pick['Pohyby_Rukou'], df_pick['Pohyby_Exact'], df_pick['Pohyby_Loose_Miss'] = tt, te, tm
     df_pick['Celkova_Vaha_KG'] = df_pick['Qty'] * df_pick['Piece_Weight_KG']
 
