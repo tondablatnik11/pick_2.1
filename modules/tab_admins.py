@@ -19,41 +19,43 @@ def render_admins(df_vekp, df_likp):
     # SEKCE 1: TRACKING ZÁSILEK (UPS / FEDEX)
     # ==========================================
     st.markdown("#### 🌍 Sledování zásilek (Tracking)")
-    st.write("Zadejte sledovací číslo (Bill of lading) pro vyhledání příslušné zakázky a zobrazení odkazu na sledování.")
+    st.write("Zadejte sledovací číslo (např. z Bill of Lading) pro vyhledání příslušné zakázky a zobrazení odkazu na sledování.")
     
     if df_likp is not None and not df_likp.empty:
-        c_del_likp = next((c for c in df_likp.columns if "DELIVERY" in str(c).upper() or "LIEFERUNG" in str(c).upper() or "DODÁVKA" in str(c).upper()), None)
-        c_bol = next((c for c in df_likp.columns if "BILL OF LADING" in str(c).upper() or "PROHLÁŠENÍ" in str(c).upper() or "NÁKLADNÍ" in str(c).upper()), None)
+        # Najdeme sloupec se zakázkou
+        c_del_likp = next((c for c in df_likp.columns if "DELIVERY" in str(c).upper() or "LIEFERUNG" in str(c).upper() or "DODÁVKA" in str(c).upper() or "ZAKÁZKA" in str(c).upper()), None)
         
-        if c_del_likp and c_bol:
-            # Textové vyhledávací pole pro rychlé vložení čísla balíku
-            track_input = st.text_input("🔍 Hledat podle Bill of lading (Tracking ID):", placeholder="Např. 1Z1J... nebo 8832...").strip()
+        if not c_del_likp and len(df_likp.columns) > 0:
+            c_del_likp = df_likp.columns[0] # Fallback na první sloupec, pokud se nenašel název
+
+        track_input = st.text_input("🔍 Hledat podle sledovacího čísla (Tracking ID):", placeholder="Např. 1ZR1J... nebo 8832...").strip()
+        
+        if track_input:
+            track_clean = track_input.upper().replace(" ", "")
             
-            if track_input:
-                # Prohledáme LIKP (ignurujeme velikost písmen)
-                match_df = df_likp[df_likp[c_bol].astype(str).str.contains(track_input, case=False, na=False)]
-                
-                if not match_df.empty:
-                    for _, row in match_df.iterrows():
-                        track_id = str(row[c_bol]).strip()
-                        del_id = safe_del(row[c_del_likp])
-                        
-                        st.success(f"✅ Nalezeno! Zásilka **{track_id}** patří k zakázce (Delivery): **{del_id}**")
-                        
-                        # Chytrá detekce dopravce
-                        if track_id.upper().startswith('1Z'):
-                            url = f"https://www.ups.com/track?tracknum={track_id}"
-                            st.markdown(f"📦 Detekováno **UPS**. [➡️ Klikněte zde pro sledování zásilky na webu UPS]({url})")
-                        elif track_id.isdigit() and len(track_id) >= 10:
-                            url = f"https://www.fedex.com/fedextrack/?trknbr={track_id}"
-                            st.markdown(f"📦 Detekováno **FedEx**. [➡️ Klikněte zde pro sledování zásilky na webu FedEx]({url})")
-                        else:
-                            st.warning("Dopravce nebyl automaticky rozpoznán. Zkuste tyto odkazy:")
-                            st.markdown(f"[🔗 Zkusit UPS](https://www.ups.com/track?tracknum={track_id}) | [🔗 Zkusit FedEx](https://www.fedex.com/fedextrack/?trknbr={track_id})")
-                        st.divider()
-                else:
-                    st.error(f"❌ Číslo zásilky '{track_input}' nebylo v reportu LIKP nalezeno.")
-        else: st.warning("V LIKP reportu chybí sloupec 'Bill of lading' nebo 'Delivery'.")
+            # 💡 CHYTRÉ HLEDÁNÍ: Prohledáme ÚPLNĚ VŠECHNY sloupce v LIKP.
+            # Nezáleží na tom, jak se sloupec jmenuje (Frachtbrief, Waybill, atd.), pokud to tam je, najde to.
+            mask = df_likp.astype(str).apply(lambda col: col.str.upper().str.replace(" ", "").str.contains(track_clean, na=False))
+            match_df = df_likp[mask.any(axis=1)]
+            
+            if not match_df.empty:
+                for _, row in match_df.iterrows():
+                    del_id = safe_del(row[c_del_likp])
+                    st.success(f"✅ Nalezeno! Zásilka **{track_input}** patří k zakázce (Delivery): **{del_id}**")
+                    
+                    # Chytrá detekce dopravce z vloženého čísla
+                    if track_clean.startswith('1Z'):
+                        url = f"https://www.ups.com/track?tracknum={track_clean}"
+                        st.markdown(f"📦 Detekováno **UPS**. [➡️ Klikněte zde pro sledování zásilky na webu UPS]({url})")
+                    elif track_clean.isdigit() and len(track_clean) >= 10:
+                        url = f"https://www.fedex.com/fedextrack/?trknbr={track_clean}"
+                        st.markdown(f"📦 Detekováno **FedEx**. [➡️ Klikněte zde pro sledování zásilky na webu FedEx]({url})")
+                    else:
+                        st.warning("Dopravce nebyl automaticky rozpoznán. Zkuste tyto odkazy:")
+                        st.markdown(f"[🔗 Zkusit UPS](https://www.ups.com/track?tracknum={track_clean}) | [🔗 Zkusit FedEx](https://www.fedex.com/fedextrack/?trknbr={track_clean})")
+                    st.divider()
+            else:
+                st.error(f"❌ Číslo zásilky '{track_input}' nebylo v reportu LIKP nikde nalezeno.")
     else: st.info("Pro funkci Trackingu nahrajte report LIKP v Admin Zóně.")
 
     st.divider()
@@ -103,7 +105,6 @@ def render_admins(df_vekp, df_likp):
             vekp_ana = df_vekp.dropna(subset=[c_pack_ana]).copy()
             vekp_ana['TempDate'] = pd.to_datetime(vekp_ana[c_date_ana], errors='coerce')
             
-            # Očištění unikátních HU, abychom nespočítali stejnou paletu vícekrát
             if c_hu_ana: 
                 vekp_ana['Clean_HU'] = vekp_ana[c_hu_ana].apply(safe_hu)
                 vekp_ana = vekp_ana.drop_duplicates(subset=['Clean_HU'])
